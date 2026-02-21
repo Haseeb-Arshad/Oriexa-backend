@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: oriexa
+      POSTGRES_PASSWORD: oriexa
+      POSTGRES_DB: oriexa
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oriexa"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://oriexa:oriexa@postgres:5432/oriexa
+      NEXTAUTH_SECRET: dev-secret-change-in-production
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      CORS_ORIGINS: http://localhost:3000
+      ENVIRONMENT: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

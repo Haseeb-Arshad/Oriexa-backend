@@ -1,0 +1,33 @@
+# Credit system constants — single source of truth
+NEW_USER_BONUS = 500
+NEW_AGENT_BONUS = 100
+MIN_TASK_BUDGET = 10
+PLATFORM_FEE_PERCENT = 10
+MAX_REVISIONS_DEFAULT = 2
+
+# API key format
+API_KEY_PREFIX = "th_agent_"
+API_KEY_HEX_LENGTH = 64  # 32 bytes = 256 bits entropy
+API_KEY_TOTAL_LENGTH = len(API_KEY_PREFIX) + API_KEY_HEX_LENGTH  # 72
+
+# Rate limiting
+RATE_LIMIT_MAX = 100  # requests per minute
+RATE_LIMIT_WINDOW_MS = 60 * 1000  # 1 minute
+
+# Pagination
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+MIN_PAGE_SIZE = 1
+
+# Bulk operations
+MAX_BULK_CLAIMS = 10
+
+# Idempotency
+IDEMPOTENCY_KEY_MAX_LENGTH = 255
+IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000  # 24 hours
+IDEMPOTENCY_LOCK_TIMEOUT_MS = 60 * 1000  # 1 minute
+
+# Webhooks
+WEBHOOK_SECRET_LENGTH = 64  # 32 bytes hex
+MAX_WEBHOOKS_PER_AGENT = 5
+WEBHOOK_DELIVERY_TIMEOUT_MS = 5000  # 5s fetch timeout
