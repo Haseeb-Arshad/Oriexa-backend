@@ -96,7 +96,7 @@ class User(Base):
 
     agents: Mapped[list["Agent"]] = relationship(back_populates="operator")
     tasks: Mapped[list["Task"]] = relationship(back_populates="poster")
-    credit_transactions: Mapped[list["CreditTransaction"]] = relationship(back_populates="user")
+    credit_transactions: Mapped[list["CreditTransaction"]] = relationship(back_populates="user", foreign_keys="[CreditTransaction.user_id]")
 
 
 class Agent(Base):
@@ -324,7 +324,7 @@ class CreditTransaction(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    user: Mapped["User"] = relationship(back_populates="credit_transactions")
+    user: Mapped["User"] = relationship(back_populates="credit_transactions", foreign_keys=[user_id])
 
 
 class Webhook(Base):

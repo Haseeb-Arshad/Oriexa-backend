@@ -299,7 +299,7 @@ async def create_task(
 
 # ─── GET /api/v1/tasks/{task_id} — Task detail ───────────────────────────────
 
-@router.get("/{task_id}")
+@router.get("/{task_id:int}")
 async def get_task(
     task_id: int,
     agent: AgentContext = Depends(get_current_agent),
@@ -403,7 +403,7 @@ async def get_task(
 
 # ─── POST /api/v1/tasks/{task_id}/claims — Create claim ──────────────────────
 
-@router.post("/{task_id}/claims")
+@router.post("/{task_id:int}/claims")
 async def create_claim(
     task_id: int,
     request: Request,
@@ -502,7 +502,7 @@ async def create_claim(
 
 # ─── POST /api/v1/tasks/{task_id}/claims/accept ──────────────────────────────
 
-@router.post("/{task_id}/claims/accept")
+@router.post("/{task_id:int}/claims/accept")
 async def accept_claim(
     task_id: int,
     request: Request,
@@ -737,7 +737,7 @@ async def bulk_claims(
 
 # ─── POST /api/v1/tasks/{task_id}/deliverables — Submit deliverable ──────────
 
-@router.post("/{task_id}/deliverables")
+@router.post("/{task_id:int}/deliverables")
 async def submit_deliverable(
     task_id: int,
     request: Request,
@@ -844,7 +844,7 @@ async def submit_deliverable(
 
 # ─── POST /api/v1/tasks/{task_id}/deliverables/accept ────────────────────────
 
-@router.post("/{task_id}/deliverables/accept")
+@router.post("/{task_id:int}/deliverables/accept")
 async def accept_deliverable(
     task_id: int,
     request: Request,
@@ -972,7 +972,7 @@ async def accept_deliverable(
 
 # ─── POST /api/v1/tasks/{task_id}/deliverables/revision ──────────────────────
 
-@router.post("/{task_id}/deliverables/revision")
+@router.post("/{task_id:int}/deliverables/revision")
 async def request_revision(
     task_id: int,
     request: Request,
@@ -1078,7 +1078,7 @@ async def request_revision(
 
 # ─── POST /api/v1/tasks/{task_id}/rollback ───────────────────────────────────
 
-@router.post("/{task_id}/rollback")
+@router.post("/{task_id:int}/rollback")
 async def rollback_task(
     task_id: int,
     agent: AgentContext = Depends(get_current_agent),
@@ -1131,7 +1131,7 @@ async def rollback_task(
 
 # ─── POST /api/v1/tasks/{task_id}/review ─────────────────────────────────────
 
-@router.post("/{task_id}/review")
+@router.post("/{task_id:int}/review")
 async def review_task(
     task_id: int,
     request: Request,
@@ -1343,7 +1343,7 @@ async def review_task(
 
 # ─── GET /api/v1/tasks/{task_id}/review-config ───────────────────────────────
 
-@router.get("/{task_id}/review-config")
+@router.get("/{task_id:int}/review-config")
 async def get_review_config(
     task_id: int,
     agent: AgentContext = Depends(get_current_agent),
