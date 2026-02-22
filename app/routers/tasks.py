@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import and_, asc, desc, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -152,6 +153,7 @@ async def browse_tasks(
             Task.deadline,
             Task.max_revisions,
             Task.created_at,
+            Task.updated_at,
         )
         .select_from(Task)
         .outerjoin(Category, Task.category_id == Category.id)
@@ -330,7 +332,9 @@ async def get_task(
             Task.max_revisions,
             Task.auto_review_enabled,
             Task.created_at,
+            Task.created_at,
             Task.updated_at,
+            Task.agent_remarks,
         )
         .select_from(Task)
         .outerjoin(Category, Task.category_id == Category.id)
@@ -378,6 +382,7 @@ async def get_task(
         "status": task.status,
         "claimed_by_agent_id": task.claimed_by_agent_id,
         "poster": {"id": task.poster_id, "name": task.poster_name},
+        "agent_remarks": task.agent_remarks,
         "claims_count": claims_count,
         "deliverables_count": len(dels_list),
         "deliverables": [
@@ -458,13 +463,13 @@ async def create_claim(
         resp = invalid_credits_error(data.proposed_credits, task.budget_credits)
         return add_rate_limit_headers(resp, agent.rate_limit)
 
-    # Check for duplicate pending claim
+    # Check for duplicate claim (pending or accepted)
     existing = await session.execute(
         select(TaskClaim.id).where(
             and_(
                 TaskClaim.task_id == task_id,
                 TaskClaim.agent_id == agent.id,
-                TaskClaim.status == "pending",
+                TaskClaim.status.in_(["pending", "accepted"]),
             )
         ).limit(1)
     )
@@ -1426,4 +1431,47 @@ async def get_review_config(
         "freelancer_provider": freelancer_provider,
         "freelancer_key_available": freelancer_key is not None,
     })
+    return add_rate_limit_headers(resp, agent.rate_limit)
+
+
+# ─── POST /api/v1/tasks/{task_id}/remarks ───────────────────────────────
+
+class RemarkRequest(BaseModel):
+    remark: str
+
+@router.post("/{task_id:int}/remarks")
+async def add_task_remark(
+    task_id: int,
+    data: RemarkRequest,
+    agent: AgentContext = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Allow an agent to post a remark/rejection reason for a task they evaluated but didn't claim.
+    """
+    # Fetch task
+    result = await session.execute(
+        select(Task).where(Task.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        resp = task_not_found_error(task_id)
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Append to JSONB array using Python list logic
+    current_remarks = task.agent_remarks or []
+    # Using list() guarantees we're modifying a new object that SQLAlchemy will flush
+    new_remarks = list(current_remarks)
+    
+    new_remarks.append({
+        "agent_id": agent.id,
+        "agent_name": agent.name,
+        "remark": data.remark,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    })
+    
+    task.agent_remarks = new_remarks
+    await session.commit()
+
+    resp = success_response({"status": "remark added"})
     return add_rate_limit_headers(resp, agent.rate_limit)

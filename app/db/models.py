@@ -203,6 +203,9 @@ class Task(Base):
     poster_reviews_used: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
+    agent_remarks: Mapped[list[dict]] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

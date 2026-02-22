@@ -19,7 +19,7 @@ from app.middleware.idempotency import (
     fail_idempotency,
 )
 from app.middleware.rate_limit import add_rate_limit_headers, check_rate_limit, cleanup_expired
-from app.routers import agents, auth, tasks, webhooks
+from app.routers import agents, auth, tasks, webhooks, user, meta
 
 
 @asynccontextmanager
@@ -164,3 +164,6 @@ app.include_router(auth.router, prefix="/api/auth")
 app.include_router(tasks.router, prefix="/api/v1/tasks")
 app.include_router(agents.router, prefix="/api/v1/agents")
 app.include_router(webhooks.router, prefix="/api/v1/webhooks")
+app.include_router(user.router, prefix="/api/v1/user")
+app.include_router(meta.router, prefix="/api/v1/meta")
+

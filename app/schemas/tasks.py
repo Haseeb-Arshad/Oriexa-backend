@@ -24,3 +24,8 @@ class BrowseTasksParams(BaseModel):
     sort: Literal["newest", "oldest", "budget_high", "budget_low"] = "newest"
     cursor: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
+
+
+class UpdateTaskRequest(BaseModel):
+    description: str | None = Field(default=None, min_length=20, max_length=5000)
+    requirements: str | None = Field(default=None, max_length=5000)
