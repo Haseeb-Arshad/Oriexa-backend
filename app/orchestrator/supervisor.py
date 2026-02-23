@@ -10,6 +10,7 @@ from langgraph.graph import END, StateGraph
 
 from app.orchestrator.progress import progress_tracker
 from app.orchestrator.state import TaskState
+from app.orchestrator.git_helper import GitHelper
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,17 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
 
     plan = result.get("plan", [])
     subtask_titles = [s.get("title", "Step") for s in plan]
+
+    # Git commit after planning
+    workspace_path = state.get("workspace_path")
+    if workspace_path:
+        progress_tracker.add_step(eid, "planning", "committing",
+            detail="Saving plan to version control")
+        git = GitHelper(workspace_path)
+        await git.add_commit_push(
+            f"Phase: Planning - Created plan with {len(plan)} subtasks"
+        )
+
     progress_tracker.add_step(eid, "planning", "done",
         detail=f"Created a {len(plan)}-step plan: {', '.join(subtask_titles[:4])}{'...' if len(plan) > 4 else ''}",
         metadata={"subtask_count": len(plan), "subtasks": subtask_titles})
@@ -150,6 +162,16 @@ async def execution_node(state: TaskState) -> dict[str, Any]:
 
     progress_tracker.add_step(eid, "execution", "testing",
         detail=f"Verifying the work — {len(commands)} command(s) run, checking outputs")
+
+    # Git commit after execution
+    workspace_path = state.get("workspace_path")
+    if workspace_path:
+        progress_tracker.add_step(eid, "execution", "committing",
+            detail="Committing changes to version control")
+        git = GitHelper(workspace_path)
+        await git.add_commit_push(
+            f"Phase: Execution - {len(files_created)} files created, {len(files_modified)} files modified"
+        )
 
     detail_parts = []
     if files_created:
@@ -199,6 +221,16 @@ async def complex_execution_node(state: TaskState) -> dict[str, Any]:
     progress_tracker.add_step(eid, "complex_execution", "testing",
         detail="Running thorough tests and validation — making sure everything holds up")
 
+    # Git commit after complex execution
+    workspace_path = state.get("workspace_path")
+    if workspace_path:
+        progress_tracker.add_step(eid, "complex_execution", "committing",
+            detail="Committing implementation to version control")
+        git = GitHelper(workspace_path)
+        await git.add_commit_push(
+            f"Phase: Complex Execution - {len(files_created)} files created, {len(files_modified)} files modified"
+        )
+
     progress_tracker.add_step(eid, "complex_execution", "done",
         detail=f"Deep work complete — {len(files_created)} file(s) created, {len(files_modified)} modified",
         metadata={"files_created": len(files_created), "files_modified": len(files_modified)})
@@ -237,6 +269,16 @@ async def review_node(state: TaskState) -> dict[str, Any]:
     else:
         detail = f"Quality score: {score}/100 — found some improvements to make. Going back to refine."
 
+    # Git commit after review
+    workspace_path = state.get("workspace_path")
+    if workspace_path and passed:
+        progress_tracker.add_step(eid, "review", "committing",
+            detail="Committing reviewed code to version control")
+        git = GitHelper(workspace_path)
+        await git.add_commit_push(
+            f"Phase: Review Complete - Quality score: {score}/100"
+        )
+
     progress_tracker.add_step(eid, "review", "done", detail=detail,
         metadata={"score": score, "passed": passed, "feedback": feedback[:200]})
 
@@ -267,6 +309,17 @@ async def delivery_node(state: TaskState) -> dict[str, Any]:
             detail=f"Hit a snag during delivery: {result['error']}")
     else:
         files_created = state.get("files_created", [])
+
+        # Final Git commit after successful delivery
+        workspace_path = state.get("workspace_path")
+        if workspace_path:
+            progress_tracker.add_step(eid, "delivery", "finalizing",
+                detail="Creating final commit with delivery metadata")
+            git = GitHelper(workspace_path)
+            await git.add_commit_push(
+                f"Phase: Delivery Complete - Task delivered with {len(files_created)} file(s)"
+            )
+
         progress_tracker.add_step(eid, "delivery", "done",
             detail=f"Successfully delivered! {len(files_created)} file(s) included in the final package.",
             metadata={"files_count": len(files_created)})
