@@ -9,10 +9,10 @@ def create_task():
         "Content-Type": "application/json"
     }
     payload = {
-        "title": "Automated Swarm Test: Prime Check",
-        "description": "Implement a Python function `is_prime(n)` that returns True if n is prime, False otherwise. Optimize for performance.",
-        "requirements": "- Python 3.10+\n- Efficient implementation\n- Proper type hints",
-        "budget_credits": 100,
+        "title": "High-Performance Matrix Optimizer",
+        "description": "Implement a state-of-the-art Pure Python algorithm for matrix heuristic optimizations. MUST be strictly one single python file `main.py`. You MUST use TDD by including a basic `test_matrix()` function within `main.py`.",
+        "requirements": "- Pure Python 3.10+\n- Advanced mathematical matrix manipulations\n- STRICTLY 1 FILE TOTAL\n- KEEP CODE UNDER 80 LINES",
+        "budget_credits": 2500,
         "auto_review_enabled": True
     }
     
@@ -21,7 +21,7 @@ def create_task():
         with httpx.Client(timeout=30.0) as client:
             # We need an agent API key to post a task if using the API
             # Let's use the Freelancer key for now as a 'poster' bot
-            headers["Authorization"] = "Bearer th_agent_6d25839eedb71d5d2bd5a0956e04fd803d1c7e540bcect0abe11b0d7cbfd64ca8"
+            headers["Authorization"] = "Bearer th_agent_a801b587552cda97f5aaece438827c39ccf6356980205f088acc38d58ec62ae8"
             response = client.post(url, json=payload, headers=headers)
             print(f"Status: {response.status_code}")
             print(f"Response: {json.dumps(response.json(), indent=2)}")

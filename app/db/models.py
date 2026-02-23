@@ -16,12 +16,16 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.db.enums import (
+    AgentRole,
     AgentStatus,
     ClaimStatus,
     DeliverableStatus,
     LlmProvider,
+    MessageDirection,
+    OrchTaskStatus,
     ReviewKeySource,
     ReviewResult,
+    SubtaskStatus,
     TaskStatus,
     TransactionType,
     UserRole,
@@ -69,6 +73,25 @@ review_result_enum = PgEnum(
 review_key_source_enum = PgEnum(
     "poster", "freelancer", "none",
     name="review_key_source", create_type=False,
+)
+
+# Orchestrator ENUM types
+orch_task_status_enum = PgEnum(
+    "pending", "claiming", "clarifying", "planning", "executing",
+    "reviewing", "delivering", "completed", "failed",
+    name="orch_task_status", create_type=False,
+)
+agent_role_enum = PgEnum(
+    "triage", "clarification", "planning", "execution", "complex_task", "review",
+    name="agent_role", create_type=False,
+)
+subtask_status_enum = PgEnum(
+    "pending", "in_progress", "completed", "failed", "skipped",
+    name="subtask_status", create_type=False,
+)
+message_direction_enum = PgEnum(
+    "agent_to_poster", "poster_to_agent",
+    name="message_direction", create_type=False,
 )
 
 
@@ -450,3 +473,122 @@ class SubmissionAttempt(Base):
         review_key_source_enum, nullable=False, server_default="none"
     )
     llm_model_used: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator Models (orch_ prefix)
+# ---------------------------------------------------------------------------
+
+class OrchTaskExecution(Base):
+    """Tracks each task through the orchestrator pipeline."""
+    __tablename__ = "orch_task_executions"
+    __table_args__ = (
+        Index("orch_task_exec_status_idx", "status"),
+        Index("orch_task_exec_task_id_idx", "oriexa_task_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    oriexa_task_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(
+        orch_task_status_enum, nullable=False, server_default="pending"
+    )
+    task_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    graph_thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    total_tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    total_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, server_default="0.0")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    claimed_credits: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    subtasks: Mapped[list["OrchSubtask"]] = relationship(back_populates="execution")
+    messages: Mapped[list["OrchMessage"]] = relationship(back_populates="execution")
+    agent_runs: Mapped[list["OrchAgentRun"]] = relationship(back_populates="execution")
+
+
+class OrchSubtask(Base):
+    """Subtasks created by PlanningAgent for task decomposition."""
+    __tablename__ = "orch_subtasks"
+    __table_args__ = (
+        Index("orch_subtasks_execution_id_idx", "execution_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    execution_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("orch_task_executions.id"), nullable=False
+    )
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        subtask_status_enum, nullable=False, server_default="pending"
+    )
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    files_changed: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    depends_on: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    execution: Mapped["OrchTaskExecution"] = relationship(back_populates="subtasks")
+
+
+class OrchMessage(Base):
+    """Messages exchanged between agents and task posters."""
+    __tablename__ = "orch_messages"
+    __table_args__ = (
+        Index("orch_messages_execution_id_idx", "execution_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    execution_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("orch_task_executions.id"), nullable=False
+    )
+    direction: Mapped[str] = mapped_column(message_direction_enum, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    deliverable_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    execution: Mapped["OrchTaskExecution"] = relationship(back_populates="messages")
+
+
+class OrchAgentRun(Base):
+    """Audit log of every agent invocation in the orchestrator."""
+    __tablename__ = "orch_agent_runs"
+    __table_args__ = (
+        Index("orch_agent_runs_execution_id_idx", "execution_id"),
+        Index("orch_agent_runs_role_idx", "role"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    execution_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("orch_task_executions.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(agent_role_enum, nullable=False)
+    model_used: Mapped[str] = mapped_column(String(200), nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    execution: Mapped["OrchTaskExecution"] = relationship(back_populates="agent_runs")

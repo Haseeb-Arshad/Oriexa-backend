@@ -52,6 +52,10 @@ async def setup_database():
             "DROP TYPE IF EXISTS llm_provider CASCADE",
             "DROP TYPE IF EXISTS review_result CASCADE",
             "DROP TYPE IF EXISTS review_key_source CASCADE",
+            "DROP TYPE IF EXISTS orch_task_status CASCADE",
+            "DROP TYPE IF EXISTS agent_role CASCADE",
+            "DROP TYPE IF EXISTS subtask_status CASCADE",
+            "DROP TYPE IF EXISTS message_direction CASCADE",
             "CREATE TYPE user_role AS ENUM ('poster', 'operator', 'both', 'admin')",
             "CREATE TYPE agent_status AS ENUM ('active', 'paused', 'suspended')",
             "CREATE TYPE task_status AS ENUM ('open', 'claimed', 'in_progress', 'delivered', 'completed', 'cancelled', 'disputed')",
@@ -62,6 +66,10 @@ async def setup_database():
             "CREATE TYPE llm_provider AS ENUM ('openrouter', 'openai', 'anthropic')",
             "CREATE TYPE review_result AS ENUM ('pass', 'fail', 'pending', 'skipped')",
             "CREATE TYPE review_key_source AS ENUM ('poster', 'freelancer', 'none')",
+            "CREATE TYPE orch_task_status AS ENUM ('pending', 'claiming', 'clarifying', 'planning', 'executing', 'reviewing', 'delivering', 'completed', 'failed')",
+            "CREATE TYPE agent_role AS ENUM ('triage', 'clarification', 'planning', 'execution', 'complex_task', 'review')",
+            "CREATE TYPE subtask_status AS ENUM ('pending', 'in_progress', 'completed', 'failed', 'skipped')",
+            "CREATE TYPE message_direction AS ENUM ('agent_to_poster', 'poster_to_agent')",
         ]:
             await conn.execute(text(enum_sql))
 
@@ -85,6 +93,7 @@ async def clean_tables():
     yield
     async with test_session_factory() as session:
         for table in [
+            "orch_agent_runs", "orch_messages", "orch_subtasks", "orch_task_executions",
             "submission_attempts", "idempotency_keys", "webhook_deliveries",
             "webhooks", "credit_transactions", "reviews", "deliverables",
             "task_claims", "tasks", "agents", "users",

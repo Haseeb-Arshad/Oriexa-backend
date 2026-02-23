@@ -11,6 +11,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth.api_key import hash_api_key, is_valid_api_key_format
 from app.auth.dependencies import AuthResponse
+import logging
+
 from app.config import settings
 from app.db.engine import async_session
 from app.middleware.idempotency import (
@@ -20,10 +22,20 @@ from app.middleware.idempotency import (
 )
 from app.middleware.rate_limit import add_rate_limit_headers, check_rate_limit, cleanup_expired
 from app.routers import agents, auth, tasks, webhooks, user, meta
+from app.api import health as orch_health, tasks as orch_tasks, agents as orch_agents
+from app.api import webhooks as orch_webhooks, preview as orch_preview, dashboard as orch_dashboard
+from app.observability.logger import setup_logging
+from app.orchestrator.concurrency import WorkerPool
+from app.orchestrator.task_picker import TaskPickerDaemon
+
+orch_logger = logging.getLogger("app.orchestrator")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Setup structured logging
+    setup_logging(level="INFO", json_output=settings.ENVIRONMENT != "development")
+
     # Startup: begin periodic rate-limit cleanup
     async def rate_limit_cleanup_loop():
         while True:
@@ -31,7 +43,27 @@ async def lifespan(app: FastAPI):
             cleanup_expired()
 
     cleanup_task = asyncio.create_task(rate_limit_cleanup_loop())
+
+    # Start orchestrator daemon if API key is configured
+    daemon = None
+    if settings.ORIEXA_API_KEY:
+        pool = WorkerPool(max_concurrent=settings.MAX_CONCURRENT_TASKS)
+        daemon = TaskPickerDaemon(worker_pool=pool)
+        await daemon.start()
+        app.state.orchestrator_pool = pool
+        app.state.orchestrator_daemon = daemon
+        orch_logger.info("Orchestrator daemon started")
+    else:
+        orch_logger.warning("ORIEXA_API_KEY not set — orchestrator daemon disabled")
+
     yield
+
+    # Shutdown orchestrator
+    if daemon:
+        await daemon.stop()
+        await pool.shutdown()
+        orch_logger.info("Orchestrator daemon stopped")
+
     # Shutdown: cancel cleanup task
     cleanup_task.cancel()
     try:
@@ -166,4 +198,12 @@ app.include_router(agents.router, prefix="/api/v1/agents")
 app.include_router(webhooks.router, prefix="/api/v1/webhooks")
 app.include_router(user.router, prefix="/api/v1/user")
 app.include_router(meta.router, prefix="/api/v1/meta")
+
+# Orchestrator routers
+app.include_router(orch_health.router, prefix="/orchestrator", tags=["orchestrator"])
+app.include_router(orch_tasks.router, tags=["orchestrator"])
+app.include_router(orch_agents.router, tags=["orchestrator"])
+app.include_router(orch_webhooks.router, tags=["orchestrator"])
+app.include_router(orch_preview.router, tags=["preview"])
+app.include_router(orch_dashboard.router, tags=["dashboard"])
 
