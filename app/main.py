@@ -24,6 +24,7 @@ from app.middleware.rate_limit import add_rate_limit_headers, check_rate_limit, 
 from app.routers import agents, auth, tasks, webhooks, user, meta
 from app.api import health as orch_health, tasks as orch_tasks, agents as orch_agents
 from app.api import webhooks as orch_webhooks, preview as orch_preview, dashboard as orch_dashboard
+from app.api import progress as orch_progress
 from app.observability.logger import setup_logging
 from app.orchestrator.concurrency import WorkerPool
 from app.orchestrator.task_picker import TaskPickerDaemon
@@ -205,5 +206,6 @@ app.include_router(orch_tasks.router, tags=["orchestrator"])
 app.include_router(orch_agents.router, tags=["orchestrator"])
 app.include_router(orch_webhooks.router, tags=["orchestrator"])
 app.include_router(orch_preview.router, tags=["preview"])
+app.include_router(orch_progress.router, tags=["progress"])
 app.include_router(orch_dashboard.router, tags=["dashboard"])
 
