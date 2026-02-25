@@ -1,11 +1,14 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func, update
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import select, func, update, asc, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import get_db
-from app.db.models import User, Task, TaskClaim, Category, Deliverable, Agent, SubmissionAttempt, CreditTransaction
+from app.db.models import User, Task, TaskClaim, Category, Deliverable, Agent, SubmissionAttempt, CreditTransaction, TaskMessage
 from app.auth.user_auth import get_current_user_id
 from app.services.webhooks import dispatch_new_task_match, dispatch_webhook_event
+from app.services.reputation import compute_reputation_tier
+from app.api.events import event_broadcaster
 
 router = APIRouter()
 
@@ -111,13 +114,18 @@ async def get_user_task_detail(
 
     # Fetch claims with agent info
     claims_result = await session.execute(
-        select(TaskClaim, Agent.name, Agent.reputation_score, Agent.tasks_completed)
+        select(
+            TaskClaim, Agent.name, Agent.reputation_score,
+            Agent.tasks_completed, Agent.avg_rating, Agent.capabilities,
+        )
         .join(Agent, TaskClaim.agent_id == Agent.id)
         .where(TaskClaim.task_id == task_id)
         .order_by(TaskClaim.created_at.desc())
     )
-    claims = [
-        {
+    claims = []
+    for c in claims_result.all():
+        tier = compute_reputation_tier(c.reputation_score, c.tasks_completed, c.avg_rating)
+        claims.append({
             "id": c.TaskClaim.id,
             "agent_id": c.TaskClaim.agent_id,
             "agent_name": c.name,
@@ -126,10 +134,11 @@ async def get_user_task_detail(
             "status": c.TaskClaim.status,
             "created_at": c.TaskClaim.created_at,
             "reputation_score": c.reputation_score,
-            "tasks_completed": c.tasks_completed
-        }
-        for c in claims_result.all()
-    ]
+            "tasks_completed": c.tasks_completed,
+            "avg_rating": c.avg_rating,
+            "capabilities": c.capabilities,
+            "reputation_tier": tier,
+        })
 
     # Fetch deliverables
     deliv_result = await session.execute(
@@ -290,6 +299,13 @@ async def create_user_task(
         "created_at": task.created_at.isoformat().replace("+00:00", "Z"),
     })
 
+    # Broadcast real-time event
+    event_broadcaster.broadcast(user_id, "task_created", {
+        "task_id": task.id,
+        "title": task.title,
+        "status": "open",
+    })
+
     return {"id": task.id}
 
 
@@ -347,6 +363,17 @@ async def user_accept_claim(
         "task_id": task_id,
         "claim_id": claim_id,
         "agent_id": claim.agent_id,
+    })
+
+    # Broadcast real-time event to poster
+    event_broadcaster.broadcast(user_id, "claim_updated", {
+        "task_id": task_id,
+        "claim_id": claim_id,
+        "status": "accepted",
+    })
+    event_broadcaster.broadcast(user_id, "task_updated", {
+        "task_id": task_id,
+        "status": "claimed",
     })
 
     return {"success": True}
@@ -408,6 +435,12 @@ async def user_accept_deliverable(
             "credits_paid": task.budget_credits,
         })
 
+    # Broadcast real-time event
+    event_broadcaster.broadcast(user_id, "task_updated", {
+        "task_id": task_id,
+        "status": "completed",
+    })
+
     return {"success": True}
 
 
@@ -462,7 +495,227 @@ async def user_request_revision(
             "revision_notes": notes,
         })
 
+    # Broadcast real-time event
+    event_broadcaster.broadcast(user_id, "task_updated", {
+        "task_id": task_id,
+        "status": "in_progress",
+    })
+
     return {"success": True}
+
+
+# ─── Task Messages (Conversation) ────────────────────────────────────────────
+
+def _isoformat(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+class SendMessageRequest(BaseModel):
+    content: str
+    message_type: str = "text"
+    parent_id: int | None = None
+    structured_data: dict | None = None
+
+
+class RespondToQuestionRequest(BaseModel):
+    response: str
+    option_index: int | None = None
+
+
+@router.get("/tasks/{task_id}/messages")
+async def get_task_messages(
+    task_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    before: int | None = Query(None),
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Fetch conversation messages for a task (paginated, newest last)."""
+    # Verify ownership
+    result = await session.execute(
+        select(Task.id).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    conditions = [TaskMessage.task_id == task_id]
+    if before:
+        conditions.append(TaskMessage.id < before)
+
+    msg_result = await session.execute(
+        select(TaskMessage)
+        .where(*conditions)
+        .order_by(desc(TaskMessage.id))
+        .limit(limit)
+    )
+    messages = msg_result.scalars().all()
+    messages = list(reversed(messages))  # chronological order
+
+    # Collect agent sender_ids to fetch reputation data
+    agent_ids = {m.sender_id for m in messages if m.sender_type == "agent" and m.sender_id}
+    agent_tiers = {}
+    if agent_ids:
+        agents_result = await session.execute(
+            select(Agent.id, Agent.reputation_score, Agent.tasks_completed, Agent.avg_rating)
+            .where(Agent.id.in_(agent_ids))
+        )
+        for a in agents_result.all():
+            agent_tiers[a.id] = compute_reputation_tier(a.reputation_score, a.tasks_completed, a.avg_rating)
+
+    data = []
+    for m in messages:
+        msg_data = {
+            "id": m.id,
+            "task_id": m.task_id,
+            "sender_type": m.sender_type,
+            "sender_id": m.sender_id,
+            "sender_name": m.sender_name,
+            "content": m.content,
+            "message_type": m.message_type,
+            "structured_data": m.structured_data,
+            "parent_id": m.parent_id,
+            "claim_id": m.claim_id,
+            "is_read": m.is_read,
+            "created_at": _isoformat(m.created_at),
+        }
+        if m.sender_type == "agent" and m.sender_id in agent_tiers:
+            msg_data["reputation_tier"] = agent_tiers[m.sender_id]
+        data.append(msg_data)
+
+    has_more = len(messages) == limit
+    return {
+        "messages": data,
+        "has_more": has_more,
+        "cursor": messages[0].id if messages and has_more else None,
+    }
+
+
+@router.post("/tasks/{task_id}/messages")
+async def send_task_message(
+    task_id: int,
+    request: SendMessageRequest,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Poster sends a message in the task conversation."""
+    # Verify ownership
+    result = await session.execute(
+        select(Task.id, Task.status).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
+    )
+    task = result.first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status in ("completed", "cancelled"):
+        raise HTTPException(status_code=400, detail="Cannot send messages on completed/cancelled tasks")
+
+    # Get user name
+    user_result = await session.execute(
+        select(User.name).where(User.id == user_id).limit(1)
+    )
+    user_name = user_result.scalar_one_or_none() or "Poster"
+
+    msg = TaskMessage(
+        task_id=task_id,
+        sender_type="poster",
+        sender_id=user_id,
+        sender_name=user_name,
+        content=request.content,
+        message_type=request.message_type,
+        parent_id=request.parent_id,
+        structured_data=request.structured_data,
+    )
+    session.add(msg)
+    await session.flush()
+    await session.commit()
+    await session.refresh(msg)
+
+    # Broadcast SSE
+    event_broadcaster.broadcast(user_id, "message_created", {
+        "task_id": task_id,
+        "message_id": msg.id,
+        "sender_type": "poster",
+        "message_type": msg.message_type,
+    })
+
+    return {
+        "id": msg.id,
+        "task_id": msg.task_id,
+        "sender_type": msg.sender_type,
+        "sender_name": msg.sender_name,
+        "content": msg.content,
+        "message_type": msg.message_type,
+        "created_at": _isoformat(msg.created_at),
+    }
+
+
+@router.patch("/tasks/{task_id}/messages/{message_id}/respond")
+async def respond_to_question(
+    task_id: int,
+    message_id: int,
+    request: RespondToQuestionRequest,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Poster responds to a structured question from an agent."""
+    # Verify ownership
+    result = await session.execute(
+        select(Task.id).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Fetch the question message
+    msg_result = await session.execute(
+        select(TaskMessage).where(
+            TaskMessage.id == message_id,
+            TaskMessage.task_id == task_id,
+            TaskMessage.message_type == "question",
+        ).limit(1)
+    )
+    question = msg_result.scalar_one_or_none()
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    # Update structured_data with the response
+    updated_data = dict(question.structured_data or {})
+    updated_data["response"] = request.response
+    if request.option_index is not None:
+        updated_data["selected_option"] = request.option_index
+    updated_data["responded_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    question.structured_data = updated_data
+    await session.commit()
+
+    # Also create a reply message for the timeline
+    user_result = await session.execute(
+        select(User.name).where(User.id == user_id).limit(1)
+    )
+    user_name = user_result.scalar_one_or_none() or "Poster"
+
+    reply = TaskMessage(
+        task_id=task_id,
+        sender_type="poster",
+        sender_id=user_id,
+        sender_name=user_name,
+        content=request.response,
+        message_type="text",
+        parent_id=message_id,
+    )
+    session.add(reply)
+    await session.flush()
+    await session.commit()
+    await session.refresh(reply)
+
+    event_broadcaster.broadcast(user_id, "message_created", {
+        "task_id": task_id,
+        "message_id": reply.id,
+        "sender_type": "poster",
+        "message_type": "text",
+    })
+
+    return {"success": True, "reply_id": reply.id}
 
 
 @router.get("/agents")

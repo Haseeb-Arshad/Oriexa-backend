@@ -14,7 +14,7 @@ from app.auth.dependencies import AuthResponse
 import logging
 
 from app.config import settings
-from app.db.engine import async_session
+from app.db.engine import async_session, engine
 from app.middleware.idempotency import (
     check_idempotency,
     complete_idempotency,
@@ -25,6 +25,7 @@ from app.routers import agents, auth, tasks, webhooks, user, meta
 from app.api import health as orch_health, tasks as orch_tasks, agents as orch_agents
 from app.api import webhooks as orch_webhooks, preview as orch_preview, dashboard as orch_dashboard
 from app.api import progress as orch_progress
+from app.api import events as orch_events
 from app.observability.logger import setup_logging
 from app.orchestrator.concurrency import WorkerPool
 from app.orchestrator.task_picker import TaskPickerDaemon
@@ -57,7 +58,29 @@ async def lifespan(app: FastAPI):
     else:
         orch_logger.warning("ORIEXA_API_KEY not set — orchestrator daemon disabled")
 
+    # Start MCP session manager if available
+    mcp_ctx = None
+    try:
+        from oriexa_mcp.server import mcp as mcp_server, _client as mcp_client
+        await mcp_client.start()
+        mcp_ctx = mcp_server.session_manager.run()
+        await mcp_ctx.__aenter__()
+        orch_logger.info("MCP session manager started")
+    except ImportError:
+        pass
+    except Exception as e:
+        orch_logger.warning(f"MCP session manager failed to start: {e}")
+
     yield
+
+    # Shutdown MCP
+    if mcp_ctx:
+        try:
+            from oriexa_mcp.server import _client as mcp_client
+            await mcp_ctx.__aexit__(None, None, None)
+            await mcp_client.close()
+        except Exception:
+            pass
 
     # Shutdown orchestrator
     if daemon:
@@ -71,6 +94,10 @@ async def lifespan(app: FastAPI):
         await cleanup_task
     except asyncio.CancelledError:
         pass
+
+    # Dispose SQLAlchemy engine (close all pooled connections)
+    await engine.dispose()
+    orch_logger.info("Database engine disposed")
 
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
@@ -207,5 +234,14 @@ app.include_router(orch_agents.router, tags=["orchestrator"])
 app.include_router(orch_webhooks.router, tags=["orchestrator"])
 app.include_router(orch_preview.router, tags=["preview"])
 app.include_router(orch_progress.router, tags=["progress"])
+app.include_router(orch_events.router, tags=["events"])
 app.include_router(orch_dashboard.router, tags=["dashboard"])
+
+# MCP server (streamable HTTP) — mounted at /mcp/
+try:
+    from oriexa_mcp.server import mcp as mcp_server
+    app.mount("/mcp", mcp_server.streamable_http_app())
+    logging.getLogger("app.mcp").info("MCP server mounted at /mcp/")
+except ImportError:
+    logging.getLogger("app.mcp").warning("oriexa_mcp not installed — MCP endpoint disabled")
 

@@ -26,6 +26,8 @@ from app.db.enums import (
     ReviewKeySource,
     ReviewResult,
     SubtaskStatus,
+    TaskMessageSenderType,
+    TaskMessageType,
     TaskStatus,
     TransactionType,
     UserRole,
@@ -92,6 +94,15 @@ subtask_status_enum = PgEnum(
 message_direction_enum = PgEnum(
     "agent_to_poster", "poster_to_agent",
     name="message_direction", create_type=False,
+)
+task_msg_sender_type_enum = PgEnum(
+    "poster", "agent", "system",
+    name="task_msg_sender_type", create_type=False,
+)
+task_msg_type_enum = PgEnum(
+    "text", "question", "attachment", "claim_proposal",
+    "status_change", "revision_request", "remark",
+    name="task_msg_type", create_type=False,
 )
 
 
@@ -473,6 +484,45 @@ class SubmissionAttempt(Base):
         review_key_source_enum, nullable=False, server_default="none"
     )
     llm_model_used: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Task Messages (conversation timeline)
+# ---------------------------------------------------------------------------
+
+class TaskMessage(Base):
+    """Unified conversation timeline for a task."""
+    __tablename__ = "task_messages"
+    __table_args__ = (
+        Index("task_messages_task_id_idx", "task_id"),
+        Index("task_messages_task_created_idx", "task_id", "created_at"),
+        Index("task_messages_parent_id_idx", "parent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("tasks.id"), nullable=False
+    )
+    sender_type: Mapped[str] = mapped_column(task_msg_sender_type_enum, nullable=False)
+    sender_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sender_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    message_type: Mapped[str] = mapped_column(
+        task_msg_type_enum, nullable=False, server_default="text"
+    )
+    structured_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("task_messages.id"), nullable=True
+    )
+    claim_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("task_claims.id"), nullable=True
+    )
+    is_read: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 # ---------------------------------------------------------------------------

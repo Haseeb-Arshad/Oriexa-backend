@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
 
+import httpx
 from langgraph.graph import END, StateGraph
 
+from app.config import settings
 from app.orchestrator.progress import progress_tracker
 from app.orchestrator.state import TaskState
 from app.orchestrator.git_helper import GitHelper
@@ -18,6 +21,48 @@ logger = logging.getLogger(__name__)
 def _eid(state: TaskState) -> int:
     """Extract execution_id from state."""
     return state.get("execution_id", 0)
+
+
+# ---------------------------------------------------------------------------
+# Helper: fetch messages for a task via the Oriexa API
+# ---------------------------------------------------------------------------
+
+async def _fetch_messages_for_task(task_id: int) -> list[dict[str, Any]]:
+    """Fetch all messages for a task from the Oriexa API."""
+    base_url = settings.ORIEXA_API_BASE_URL.rstrip("/")
+    api_key = settings.ORIEXA_API_KEY
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{base_url}/tasks/{task_id}/messages",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            data = body.get("data", body)
+            return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.warning("Failed to fetch messages for task %d: %s", task_id, exc)
+        return []
+
+
+async def _update_execution_status(execution_id: int, status: str) -> None:
+    """Update the orchestrator execution status in the database."""
+    try:
+        from app.db.engine import async_session
+        from app.db.models import OrchestratorExecution
+        from sqlalchemy import update
+        from datetime import datetime, timezone
+
+        async with async_session() as session:
+            await session.execute(
+                update(OrchestratorExecution)
+                .where(OrchestratorExecution.id == execution_id)
+                .values(status=status, updated_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+    except Exception as exc:
+        logger.warning("Failed to update execution %d status to %s: %s", execution_id, status, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +108,7 @@ async def triage_node(state: TaskState) -> dict[str, Any]:
 
 
 async def clarification_node(state: TaskState) -> dict[str, Any]:
-    """Run the ClarificationAgent to generate questions for the poster."""
+    """Run the ClarificationAgent to post questions to the poster."""
     from app.agents.clarification import ClarificationAgent
 
     eid = _eid(state)
@@ -76,23 +121,115 @@ async def clarification_node(state: TaskState) -> dict[str, Any]:
     result = await agent.run(state)
 
     questions = result.get("questions", [])
-    progress_tracker.add_step(eid, "clarification", "done",
-        detail=f"Sent {len(questions)} question(s) — your input will help nail the perfect solution",
-        metadata={"question_count": len(questions)})
+    clarification_needed = result.get("clarification_needed", True)
+    message_id = result.get("clarification_message_id")
+    question_summary = result.get("question_summary", "")
+
+    if clarification_needed and message_id:
+        progress_tracker.add_step(eid, "clarification", "done",
+            detail=f"Posted question to the poster — {question_summary}",
+            metadata={"question_count": len(questions), "message_id": message_id})
+    else:
+        progress_tracker.add_step(eid, "clarification", "done",
+            detail="Task is clear enough to proceed directly to planning",
+            metadata={"question_count": 0})
 
     return {
         "phase": "clarification",
         "clarification_questions": questions,
-        "clarification_message_sent": True,
-        "waiting_for_response": True,
+        "clarification_message_sent": clarification_needed and message_id is not None,
+        "clarification_message_id": message_id,
+        "waiting_for_response": clarification_needed and message_id is not None,
         "total_prompt_tokens": state.get("total_prompt_tokens", 0) + result.get("prompt_tokens", 0),
         "total_completion_tokens": state.get("total_completion_tokens", 0) + result.get("completion_tokens", 0),
     }
 
 
 async def wait_for_response_node(state: TaskState) -> dict[str, Any]:
-    """Placeholder node — graph pauses here via interrupt_before."""
-    return {"waiting_for_response": False, "phase": "planning"}
+    """Poll for the poster's response to the clarification question.
+
+    Checks every 15 seconds for up to 15 minutes. Looks for:
+    1. structured_data.responded_at on the original question message
+    2. A poster reply message with parent_id matching the question
+    """
+    message_id = state.get("clarification_message_id")
+    task_id = state.get("oriexa_task_id") or state.get("task_data", {}).get("id")
+    execution_id = state.get("execution_id", 0)
+
+    # Set CLARIFYING status so UI can show it
+    await _update_execution_status(execution_id, "clarifying")
+
+    progress_tracker.add_step(execution_id, "clarification", "waiting",
+        detail="Waiting for the poster to respond to the question...")
+
+    if not task_id:
+        logger.warning("wait_for_response_node: no task_id in state")
+        return {"waiting_for_response": False, "clarification_response": None, "phase": "planning"}
+
+    # Poll every 15s for up to 15 minutes (60 iterations)
+    max_polls = 60
+    poll_interval = 15
+
+    for poll in range(max_polls):
+        messages = await _fetch_messages_for_task(task_id)
+
+        if message_id:
+            # Check if the original question has a responded_at in structured_data
+            question_msg = next((m for m in messages if m.get("id") == message_id), None)
+            if question_msg:
+                sd = question_msg.get("structured_data") or {}
+                if sd.get("responded_at"):
+                    response = sd.get("response", "")
+                    progress_tracker.add_step(execution_id, "clarification", "responded",
+                        detail=f"Poster responded: {response[:100]}...")
+                    return {
+                        "waiting_for_response": False,
+                        "clarification_response": response,
+                        "phase": "planning",
+                    }
+
+            # Check for a poster reply with parent_id matching our question
+            reply = next(
+                (m for m in messages
+                 if m.get("parent_id") == message_id
+                 and m.get("sender_type") == "poster"),
+                None,
+            )
+            if reply:
+                response = reply.get("content", "")
+                progress_tracker.add_step(execution_id, "clarification", "responded",
+                    detail=f"Poster responded: {response[:100]}...")
+                return {
+                    "waiting_for_response": False,
+                    "clarification_response": response,
+                    "phase": "planning",
+                }
+
+        # Also check for any poster message posted after the question
+        if messages and message_id:
+            poster_msgs = [
+                m for m in messages
+                if m.get("sender_type") == "poster"
+                and isinstance(m.get("id"), int)
+                and m["id"] > message_id
+            ]
+            if poster_msgs:
+                response = poster_msgs[-1].get("content", "")
+                progress_tracker.add_step(execution_id, "clarification", "responded",
+                    detail=f"Poster responded: {response[:100]}...")
+                return {
+                    "waiting_for_response": False,
+                    "clarification_response": response,
+                    "phase": "planning",
+                }
+
+        await asyncio.sleep(poll_interval)
+
+    # Timeout — proceed without response
+    progress_tracker.add_step(execution_id, "clarification", "timeout",
+        detail="No response received after 15 minutes — proceeding with planning based on available info")
+
+    return {"waiting_for_response": False, "clarification_response": None, "phase": "planning"}
 
 
 async def planning_node(state: TaskState) -> dict[str, Any]:
@@ -111,8 +248,19 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
     progress_tracker.add_step(eid, "planning", "exploring",
         detail="Scanning the workspace, reading existing files, mapping out the landscape")
 
+    # Feed clarification response into the state for the planning agent
+    clarification_response = state.get("clarification_response")
+    planning_state = dict(state)
+    if clarification_response:
+        original_desc = planning_state.get("task_data", {}).get("description", "")
+        planning_state.setdefault("task_data", {})
+        planning_state["task_data"] = dict(planning_state["task_data"])
+        planning_state["task_data"]["description"] = (
+            f"Poster clarified: {clarification_response}\n\n{original_desc}"
+        )
+
     agent = PlanningAgent()
-    result = await agent.run(state)
+    result = await agent.run(planning_state)
 
     plan = result.get("plan", [])
     subtask_titles = [s.get("title", "Step") for s in plan]

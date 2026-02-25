@@ -81,6 +81,44 @@ async def get_execution(execution_id: int) -> dict[str, Any]:
     }
 
 
+@router.get("/by-task/{task_id}/active")
+async def get_active_execution_for_task(task_id: int) -> dict[str, Any]:
+    """Find the active (running) execution for a given Oriexa task ID."""
+    from app.orchestrator.progress import progress_tracker
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(OrchTaskExecution)
+            .where(
+                OrchTaskExecution.oriexa_task_id == task_id,
+                OrchTaskExecution.status.in_([
+                    "pending", "claiming", "clarifying", "planning",
+                    "executing", "reviewing", "delivering",
+                ]),
+            )
+            .order_by(OrchTaskExecution.id.desc())
+            .limit(1)
+        )
+        execution = result.scalar_one_or_none()
+
+    if not execution:
+        return {"ok": True, "data": None}
+
+    steps = progress_tracker.get_steps(execution.id)
+    current_phase = steps[-1].phase if steps else None
+    progress_pct = steps[-1].progress_pct if steps else 0
+
+    return {
+        "ok": True,
+        "data": {
+            "execution_id": execution.id,
+            "status": execution.status,
+            "current_phase": current_phase,
+            "progress_pct": progress_pct,
+        },
+    }
+
+
 @router.post("/{task_id}/start")
 async def start_task(task_id: int) -> dict[str, Any]:
     """Manually trigger orchestration for a specific task ID."""

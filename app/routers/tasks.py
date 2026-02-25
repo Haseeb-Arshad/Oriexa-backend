@@ -33,6 +33,7 @@ from app.db.models import (
     SubmissionAttempt,
     Task,
     TaskClaim,
+    TaskMessage,
     User,
 )
 from app.middleware.pipeline import AgentContext
@@ -43,6 +44,7 @@ from app.schemas.tasks import BrowseTasksParams, CreateTaskRequest
 from app.services.credits import process_task_completion
 from app.services.crypto import encrypt_key
 from app.services.webhooks import dispatch_new_task_match, dispatch_webhook_event
+from app.api.events import event_broadcaster
 
 router = APIRouter()
 
@@ -490,6 +492,43 @@ async def create_claim(
     await session.commit()
     await session.refresh(claim)
 
+    # Dual-write: insert claim_proposal message
+    msg = TaskMessage(
+        task_id=task_id,
+        sender_type="agent",
+        sender_id=agent.id,
+        sender_name=agent.name,
+        content=data.message or f"Proposed {data.proposed_credits} credits",
+        message_type="claim_proposal",
+        claim_id=claim.id,
+        structured_data={
+            "proposed_credits": data.proposed_credits,
+            "message": data.message,
+        },
+    )
+    session.add(msg)
+    await session.flush()
+    await session.commit()
+
+    # Broadcast real-time event to task poster
+    poster_result = await session.execute(
+        select(Task.poster_id).where(Task.id == task_id).limit(1)
+    )
+    poster_row = poster_result.first()
+    if poster_row:
+        event_broadcaster.broadcast(poster_row.poster_id, "claim_created", {
+            "task_id": task_id,
+            "claim_id": claim.id,
+            "agent_id": claim.agent_id,
+            "proposed_credits": claim.proposed_credits,
+        })
+        event_broadcaster.broadcast(poster_row.poster_id, "message_created", {
+            "task_id": task_id,
+            "message_id": msg.id,
+            "sender_type": "agent",
+            "message_type": "claim_proposal",
+        })
+
     resp = success_response(
         {
             "id": claim.id,
@@ -831,6 +870,22 @@ async def submit_deliverable(
     await session.flush()
     await session.commit()
     await session.refresh(deliverable)
+
+    # Broadcast real-time event to task poster
+    poster_result = await session.execute(
+        select(Task.poster_id).where(Task.id == task_id).limit(1)
+    )
+    poster_row = poster_result.first()
+    if poster_row:
+        event_broadcaster.broadcast(poster_row.poster_id, "deliverable_submitted", {
+            "task_id": task_id,
+            "deliverable_id": deliverable.id,
+            "revision_number": deliverable.revision_number,
+        })
+        event_broadcaster.broadcast(poster_row.poster_id, "task_updated", {
+            "task_id": task_id,
+            "status": "delivered",
+        })
 
     resp = success_response(
         {
@@ -1460,18 +1515,166 @@ async def add_task_remark(
 
     # Append to JSONB array using Python list logic
     current_remarks = task.agent_remarks or []
-    # Using list() guarantees we're modifying a new object that SQLAlchemy will flush
     new_remarks = list(current_remarks)
-    
+
+    timestamp = datetime.utcnow().isoformat() + "Z"
     new_remarks.append({
         "agent_id": agent.id,
         "agent_name": agent.name,
         "remark": data.remark,
-        "timestamp": datetime.utcnow().isoformat() + "Z"
+        "timestamp": timestamp,
     })
-    
+
     task.agent_remarks = new_remarks
+
+    # Dual-write: also insert into task_messages
+    msg = TaskMessage(
+        task_id=task_id,
+        sender_type="agent",
+        sender_id=agent.id,
+        sender_name=agent.name,
+        content=data.remark,
+        message_type="remark",
+    )
+    session.add(msg)
+    await session.flush()
     await session.commit()
 
+    # Broadcast to poster
+    event_broadcaster.broadcast(task.poster_id, "message_created", {
+        "task_id": task_id,
+        "message_id": msg.id,
+        "sender_type": "agent",
+        "message_type": "remark",
+    })
+
     resp = success_response({"status": "remark added"})
+    return add_rate_limit_headers(resp, agent.rate_limit)
+
+
+# ─── POST /api/v1/tasks/{task_id}/messages — Agent sends message ─────────────
+
+class AgentMessageRequest(BaseModel):
+    content: str
+    message_type: str = "text"
+    structured_data: dict | None = None
+    parent_id: int | None = None
+
+
+# ─── GET /api/v1/tasks/{task_id}/messages — List task messages ────────────────
+
+@router.get("/{task_id:int}/messages")
+async def list_task_messages(
+    task_id: int,
+    agent: AgentContext = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_db),
+):
+    """Agent reads all messages for a task, ordered by created_at."""
+    if task_id < 1:
+        resp = invalid_parameter_error(
+            f"Invalid task ID: {task_id}",
+            "Task IDs are positive integers.",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Verify task exists
+    task_result = await session.execute(
+        select(Task.id).where(Task.id == task_id).limit(1)
+    )
+    if not task_result.first():
+        resp = task_not_found_error(task_id)
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Fetch all messages ordered by created_at
+    msg_result = await session.execute(
+        select(
+            TaskMessage.id,
+            TaskMessage.sender_type,
+            TaskMessage.sender_name,
+            TaskMessage.content,
+            TaskMessage.message_type,
+            TaskMessage.structured_data,
+            TaskMessage.parent_id,
+            TaskMessage.created_at,
+        )
+        .where(TaskMessage.task_id == task_id)
+        .order_by(asc(TaskMessage.created_at))
+    )
+    messages = msg_result.all()
+
+    data = [
+        {
+            "id": m.id,
+            "sender_type": m.sender_type,
+            "sender_name": m.sender_name,
+            "content": m.content,
+            "message_type": m.message_type,
+            "structured_data": m.structured_data,
+            "parent_id": m.parent_id,
+            "created_at": _isoformat(m.created_at),
+        }
+        for m in messages
+    ]
+
+    resp = success_response(data)
+    return add_rate_limit_headers(resp, agent.rate_limit)
+
+
+@router.post("/{task_id:int}/messages")
+async def agent_send_message(
+    task_id: int,
+    data: AgentMessageRequest,
+    agent: AgentContext = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_db),
+):
+    """Agent sends a message or structured question in the task conversation."""
+    result = await session.execute(
+        select(Task.id, Task.status, Task.poster_id).where(Task.id == task_id).limit(1)
+    )
+    task = result.first()
+    if not task:
+        resp = task_not_found_error(task_id)
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    if task.status in ("completed", "cancelled"):
+        resp = conflict_error(
+            "TASK_CLOSED",
+            f"Task {task_id} is {task.status}",
+            "Cannot send messages on completed/cancelled tasks",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    msg = TaskMessage(
+        task_id=task_id,
+        sender_type="agent",
+        sender_id=agent.id,
+        sender_name=agent.name,
+        content=data.content,
+        message_type=data.message_type,
+        structured_data=data.structured_data,
+        parent_id=data.parent_id,
+    )
+    session.add(msg)
+    await session.flush()
+    await session.commit()
+    await session.refresh(msg)
+
+    # Broadcast to poster
+    event_broadcaster.broadcast(task.poster_id, "message_created", {
+        "task_id": task_id,
+        "message_id": msg.id,
+        "sender_type": "agent",
+        "sender_name": agent.name,
+        "message_type": data.message_type,
+    })
+
+    resp = success_response({
+        "id": msg.id,
+        "task_id": msg.task_id,
+        "sender_type": msg.sender_type,
+        "sender_name": msg.sender_name,
+        "content": msg.content,
+        "message_type": msg.message_type,
+        "created_at": _isoformat(msg.created_at),
+    }, 201)
     return add_rate_limit_headers(resp, agent.rate_limit)

@@ -1,9 +1,11 @@
-"""Shell execution tool — runs sandboxed commands in a task workspace."""
+"""Shell execution tools — runs sandboxed commands in a task workspace."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Annotated
+import time
+from typing import Annotated, Any
 
 from langchain_core.tools import tool
 
@@ -80,3 +82,91 @@ async def execute_command(
         parts.append("(no output)")
 
     return "\n".join(parts)
+
+
+# Maximum parallel commands
+MAX_PARALLEL = 4
+
+
+@tool
+async def execute_parallel(
+    commands: Annotated[
+        list[dict[str, str]],
+        'List of commands to run concurrently. Each item: {"command": "...", "description": "..."}',
+    ],
+    workspace_path: Annotated[str, "Absolute path to the task workspace directory"],
+    timeout: Annotated[int, "Timeout in seconds for each command"] = 60,
+) -> dict[str, Any]:
+    """Run multiple independent shell commands concurrently via asyncio.gather.
+
+    Use this when you have 2-4 independent tasks (e.g. installing deps, creating
+    directories, running separate test suites) that don't depend on each other.
+    Maximum 4 parallel commands.
+
+    Returns {results: [{command, description, exit_code, stdout, stderr, duration_ms}]}.
+    """
+    if not commands:
+        return {"results": [], "error": "No commands provided."}
+
+    if len(commands) > MAX_PARALLEL:
+        commands = commands[:MAX_PARALLEL]
+
+    executor = _get_executor()
+
+    async def _run_one(cmd_spec: dict[str, str]) -> dict[str, Any]:
+        command = cmd_spec.get("command", "")
+        description = cmd_spec.get("description", command)
+
+        if not command.strip():
+            return {
+                "command": command,
+                "description": description,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": "Empty command",
+                "duration_ms": 0,
+            }
+
+        start = time.monotonic()
+        result = await executor.execute(
+            command=command,
+            cwd=workspace_path,
+            timeout=timeout,
+        )
+        duration_ms = int((time.monotonic() - start) * 1000)
+
+        if result.policy_decision and not result.policy_decision.allowed:
+            return {
+                "command": command,
+                "description": description,
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"[POLICY BLOCKED] {result.policy_decision.reason}",
+                "duration_ms": duration_ms,
+            }
+
+        stdout = result.stdout.strip()
+        if len(stdout) > 4000:
+            stdout = stdout[:2000] + "\n... [truncated] ...\n" + stdout[-2000:]
+        stderr = result.stderr.strip()
+        if len(stderr) > 2000:
+            stderr = stderr[:1000] + "\n... [truncated] ...\n" + stderr[-1000:]
+
+        return {
+            "command": command,
+            "description": description,
+            "exit_code": result.exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "duration_ms": duration_ms,
+            "timed_out": result.timed_out,
+        }
+
+    logger.info(
+        "execute_parallel: running %d commands in %s",
+        len(commands), workspace_path,
+    )
+
+    results = await asyncio.gather(*[_run_one(c) for c in commands])
+
+    return {"results": list(results)}

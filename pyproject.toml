@@ -28,7 +28,12 @@ dependencies = [
     "langchain-openai>=0.2",
     "langgraph-checkpoint-postgres>=2.0",
     "psycopg[binary]>=3.2",
+    # MCP server
+    "mcp[cli]>=1.9",
 ]
+
+[project.scripts]
+oriexa-mcp = "oriexa_mcp.server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -46,8 +51,9 @@ line-length = 100
 select = ["E", "F", "I", "N", "W"]
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "oriexa_mcp"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]

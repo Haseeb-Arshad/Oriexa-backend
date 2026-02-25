@@ -41,6 +41,7 @@ class TaskState(TypedDict, total=False):
     # Clarification
     clarification_questions: list[str]
     clarification_message_sent: bool
+    clarification_message_id: int | None
     clarification_response: str | None
     waiting_for_response: bool
 

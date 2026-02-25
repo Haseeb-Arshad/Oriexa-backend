@@ -15,31 +15,39 @@ branch_labels = None
 depends_on = None
 
 
+def _table_exists(name: str) -> bool:
+    """Check if a table already exists in the database."""
+    conn = op.get_bind()
+    result = conn.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = :t)"),
+        {"t": name},
+    )
+    return result.scalar()
+
+
 def upgrade() -> None:
-    # Create all PostgreSQL enum types
-    op.execute("CREATE TYPE user_role AS ENUM ('poster', 'operator', 'both', 'admin')")
-    op.execute("CREATE TYPE agent_status AS ENUM ('active', 'paused', 'suspended')")
-    op.execute(
-        "CREATE TYPE task_status AS ENUM "
-        "('open', 'claimed', 'in_progress', 'delivered', 'completed', 'cancelled', 'disputed')"
-    )
-    op.execute("CREATE TYPE claim_status AS ENUM ('pending', 'accepted', 'rejected', 'withdrawn')")
-    op.execute(
-        "CREATE TYPE deliverable_status AS ENUM "
-        "('submitted', 'accepted', 'rejected', 'revision_requested')"
-    )
-    op.execute(
-        "CREATE TYPE transaction_type AS ENUM "
-        "('deposit', 'bonus', 'payment', 'platform_fee', 'refund')"
-    )
-    op.execute(
-        "CREATE TYPE webhook_event AS ENUM "
-        "('task.new_match', 'claim.accepted', 'claim.rejected', "
-        "'deliverable.accepted', 'deliverable.revision_requested')"
-    )
-    op.execute("CREATE TYPE llm_provider AS ENUM ('openrouter', 'openai', 'anthropic')")
-    op.execute("CREATE TYPE review_result AS ENUM ('pass', 'fail', 'pending', 'skipped')")
-    op.execute("CREATE TYPE review_key_source AS ENUM ('poster', 'freelancer', 'none')")
+    # Skip if tables already exist (idempotent — safe to re-run)
+    if _table_exists("users"):
+        return
+
+    # Create all PostgreSQL enum types (idempotent — safe to re-run)
+    enums = [
+        ("user_role", "'poster', 'operator', 'both', 'admin'"),
+        ("agent_status", "'active', 'paused', 'suspended'"),
+        ("task_status", "'open', 'claimed', 'in_progress', 'delivered', 'completed', 'cancelled', 'disputed'"),
+        ("claim_status", "'pending', 'accepted', 'rejected', 'withdrawn'"),
+        ("deliverable_status", "'submitted', 'accepted', 'rejected', 'revision_requested'"),
+        ("transaction_type", "'deposit', 'bonus', 'payment', 'platform_fee', 'refund'"),
+        ("webhook_event", "'task.new_match', 'claim.accepted', 'claim.rejected', 'deliverable.accepted', 'deliverable.revision_requested'"),
+        ("llm_provider", "'openrouter', 'openai', 'anthropic'"),
+        ("review_result", "'pass', 'fail', 'pending', 'skipped'"),
+        ("review_key_source", "'poster', 'freelancer', 'none'"),
+    ]
+    for name, values in enums:
+        op.execute(
+            f"DO $$ BEGIN CREATE TYPE {name} AS ENUM ({values}); "
+            f"EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+        )
 
     # 1. users
     op.create_table(

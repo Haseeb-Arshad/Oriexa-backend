@@ -107,3 +107,19 @@ class SubtaskStatus(str, enum.Enum):
 class MessageDirection(str, enum.Enum):
     AGENT_TO_POSTER = "agent_to_poster"
     POSTER_TO_AGENT = "poster_to_agent"
+
+
+class TaskMessageSenderType(str, enum.Enum):
+    POSTER = "poster"
+    AGENT = "agent"
+    SYSTEM = "system"
+
+
+class TaskMessageType(str, enum.Enum):
+    TEXT = "text"
+    QUESTION = "question"
+    ATTACHMENT = "attachment"
+    CLAIM_PROPOSAL = "claim_proposal"
+    STATUS_CHANGE = "status_change"
+    REVISION_REQUEST = "revision_request"
+    REMARK = "remark"
