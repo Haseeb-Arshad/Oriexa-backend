@@ -15,8 +15,8 @@ from app.tools import COMMUNICATION_TOOLS
 
 logger = logging.getLogger(__name__)
 
-# Maximum tool-call iterations
-MAX_TOOL_ITERATIONS = 6
+# Maximum tool-call iterations (enough for 3 questions + summary)
+MAX_TOOL_ITERATIONS = 8
 
 
 class ClarificationAgent(BaseAgent):
@@ -25,10 +25,15 @@ class ClarificationAgent(BaseAgent):
     Uses a ReAct loop with COMMUNICATION_TOOLS (post_question, read_task_messages)
     to actually send questions via the messages API so they appear in the UI.
 
+    Supports posting 1-3 questions per invocation.  The *last* posted
+    message_id is tracked for wait_for_response polling, plus all IDs are
+    stored in ``clarification_message_ids``.
+
     Returns:
-        clarification_needed (bool): Whether a question was posted.
-        clarification_message_id (int | None): The message ID of the posted question.
-        question_summary (str): A brief description of what was asked.
+        clarification_needed (bool): Whether question(s) were posted.
+        clarification_message_id (int | None): Last posted message ID (for polling).
+        clarification_message_ids (list[int]): All posted message IDs.
+        question_summary (str): Brief description of what was asked.
     """
 
     def __init__(self) -> None:
@@ -47,21 +52,21 @@ class ClarificationAgent(BaseAgent):
         clarity_score = state.get("clarity_score", 0.5)
 
         clarification_prompt = (
-            "Analyse the task below and post a clarification question to the poster.\n\n"
+            "Analyse the task below. Identify 1-3 critical ambiguities and post "
+            "structured questions IMMEDIATELY using the post_question tool.\n\n"
+            "RULES:\n"
+            "- DO NOT send any text before calling post_question. Your FIRST action must be a tool call.\n"
+            "- NO greetings, NO introductions, NO preambles.\n"
+            "- Call post_question once per question (up to 3 questions).\n"
+            "- Prefer multiple_choice and yes_no over text_input — they're faster to answer.\n"
+            "- Each question content must be a direct, specific question.\n\n"
             f"Task ID: {task_id}\n"
             f"Triage assessment (clarity score: {clarity_score:.2f}):\n{triage_reasoning}\n\n"
             f"Task data:\n{task_description}\n\n"
-            "Instructions:\n"
-            "1. Identify the most critical ambiguity or missing requirement.\n"
-            "2. Use the post_question tool to send ONE well-structured question.\n"
-            "   - For binary choices (yes/no): use question_type='yes_no'\n"
-            "   - For picking between 2-4 options: use question_type='multiple_choice' with options list\n"
-            "   - For open-ended info: use question_type='text_input'\n"
-            "3. The content should be a polite, specific question that references the task.\n"
-            "4. After posting, respond with a JSON summary:\n"
-            '   {"clarification_needed": true, "question_summary": "brief description of what was asked"}\n\n'
+            "After posting all questions, return a JSON summary:\n"
+            '{"clarification_needed": true, "question_summary": "brief description of all questions asked"}\n\n'
             "If the task is actually clear enough, skip posting and return:\n"
-            '   {"clarification_needed": false, "question_summary": "Task is sufficiently clear"}\n'
+            '{"clarification_needed": false, "question_summary": "Task is sufficiently clear"}\n'
         )
 
         messages: list[Any] = [
@@ -69,7 +74,7 @@ class ClarificationAgent(BaseAgent):
             HumanMessage(content=clarification_prompt),
         ]
 
-        sent_message_id: int | None = None
+        sent_message_ids: list[int] = []
 
         # ReAct loop
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -102,9 +107,12 @@ class ClarificationAgent(BaseAgent):
                 else:
                     tool_result = {"ok": False, "error": f"Unknown tool: {tool_name}"}
 
-                # Track the message ID from post_question
+                # Track all message IDs from post_question
                 if tool_name == "post_question" and isinstance(tool_result, dict) and tool_result.get("ok"):
-                    sent_message_id = tool_result.get("message_id")
+                    mid = tool_result.get("message_id")
+                    if mid is not None:
+                        sent_message_ids.append(mid)
+                        logger.info("ClarificationAgent: posted question message_id=%d", mid)
 
                 messages.append(
                     ToolMessage(content=json.dumps(tool_result, default=str), tool_call_id=tool_id)
@@ -116,19 +124,22 @@ class ClarificationAgent(BaseAgent):
 
         # Parse the final response for summary
         result = _parse_result(response.content if hasattr(response, "content") else "")
-        questions = result.get("questions", [])
-        question_summary = result.get("question_summary", "Clarification question posted")
-        clarification_needed = result.get("clarification_needed", sent_message_id is not None)
+        question_summary = result.get("question_summary", "Clarification questions posted")
+        clarification_needed = result.get("clarification_needed", len(sent_message_ids) > 0)
+
+        # Use the last message_id for polling (user responds to the last question)
+        last_message_id = sent_message_ids[-1] if sent_message_ids else None
 
         logger.info(
-            "ClarificationAgent: needed=%s message_id=%s summary=%s",
-            clarification_needed, sent_message_id, question_summary,
+            "ClarificationAgent: needed=%s message_ids=%s summary=%s",
+            clarification_needed, sent_message_ids, question_summary,
         )
 
         return {
-            "questions": questions if questions else [question_summary],
+            "questions": [question_summary],
             "clarification_needed": clarification_needed,
-            "clarification_message_id": sent_message_id,
+            "clarification_message_id": last_message_id,
+            "clarification_message_ids": sent_message_ids,
             "question_summary": question_summary,
             **self.get_token_usage(),
         }
@@ -159,4 +170,4 @@ def _parse_result(content: str) -> dict[str, Any]:
                 pass
             break
 
-    return {"clarification_needed": True, "question_summary": "Clarification question posted"}
+    return {"clarification_needed": True, "question_summary": "Clarification questions posted"}

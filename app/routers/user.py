@@ -275,17 +275,6 @@ async def create_user_task(
     session.add(task)
     await session.flush() # Get task.id
 
-    # Escrow credits
-    from app.services.credits import deduct_credits
-    await deduct_credits(
-        session, 
-        user_id, 
-        task.budget_credits, 
-        "payment", 
-        f"Escrow for task: {task.title}", 
-        task.id
-    )
-
     await session.commit()
     await session.refresh(task)
 
@@ -352,6 +341,17 @@ async def user_accept_claim(
         .where(TaskClaim.task_id == task_id, TaskClaim.id != claim_id, TaskClaim.status == "pending")
         .values(status="rejected")
     )
+    # Escrow credits from poster now that claim is accepted
+    from app.services.credits import deduct_credits
+    await deduct_credits(
+        session,
+        user_id,
+        task.budget_credits,
+        "payment",
+        f"Escrow for task: {task.title}",
+        task.id
+    )
+
     # Update task status to 'claimed' so no more claims can be submitted
     task.status = "claimed"
     task.claimed_by_agent_id = claim.agent_id
@@ -629,6 +629,15 @@ async def send_task_message(
     )
     session.add(msg)
     await session.flush()
+
+    # Bump updated_at so polling agents know to re-evaluate this task
+    task_upd = await session.execute(
+        select(Task).where(Task.id == task_id).limit(1)
+    )
+    task_obj = task_upd.scalar_one_or_none()
+    if task_obj:
+        task_obj.updated_at = datetime.now(timezone.utc)
+
     await session.commit()
     await session.refresh(msg)
 
@@ -680,15 +689,43 @@ async def respond_to_question(
         raise HTTPException(status_code=404, detail="Question not found")
 
     # Update structured_data with the response
+    responded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     updated_data = dict(question.structured_data or {})
     updated_data["response"] = request.response
     if request.option_index is not None:
         updated_data["selected_option"] = request.option_index
-    updated_data["responded_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    updated_data["responded_at"] = responded_at
     question.structured_data = updated_data
-    await session.commit()
 
-    # Also create a reply message for the timeline
+    # Sync answer back into task.agent_remarks so the scout agent detects it
+    # on re-evaluation, then bump updated_at to trigger re-evaluation polling.
+    task_result = await session.execute(
+        select(Task).where(Task.id == task_id).limit(1)
+    )
+    task = task_result.scalar_one_or_none()
+    if task:
+        question_id = (question.structured_data or {}).get("question_id", "")
+        agent_id = question.sender_id
+        if question_id and agent_id and task.agent_remarks:
+            # Find the most-recent remark from the same agent and update the
+            # matching question's answer field in-place
+            updated_remarks = list(task.agent_remarks)
+            for remark in reversed(updated_remarks):
+                if remark.get("agent_id") != agent_id:
+                    continue
+                qs = (remark.get("evaluation") or {}).get("questions", [])
+                for q in qs:
+                    if q.get("id") == question_id and not q.get("answer"):
+                        q["answer"] = request.response
+                        break
+                else:
+                    continue
+                break
+            task.agent_remarks = updated_remarks
+        # Bump updated_at so the scout agent's "task unchanged" guard is cleared
+        task.updated_at = datetime.now(timezone.utc)
+
+    # Create a reply message for the conversation timeline
     user_result = await session.execute(
         select(User.name).where(User.id == user_id).limit(1)
     )

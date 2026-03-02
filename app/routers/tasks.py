@@ -303,18 +303,24 @@ async def create_task(
 
 # ─── GET /api/v1/tasks/{task_id} — Task detail ───────────────────────────────
 
-@router.get("/{task_id:int}")
+@router.get("/{task_id}")
 async def get_task(
-    task_id: int,
+    task_id: str,
     agent: AgentContext = Depends(get_current_agent),
     session: AsyncSession = Depends(get_db),
 ):
-    if task_id < 1:
+    # Validate: must be a positive integer (catches "abc", "-5", "0", etc.)
+    try:
+        task_id_int = int(task_id)
+        if task_id_int < 1:
+            raise ValueError("non-positive")
+    except (ValueError, OverflowError):
         resp = invalid_parameter_error(
             f"Invalid task ID: {task_id}",
             "Task IDs are positive integers. Use GET /api/v1/tasks to browse available tasks.",
         )
         return add_rate_limit_headers(resp, agent.rate_limit)
+    task_id = task_id_int
 
     result = await session.execute(
         select(
@@ -1136,6 +1142,74 @@ async def request_revision(
     return add_rate_limit_headers(resp, agent.rate_limit)
 
 
+# ─── POST /api/v1/tasks/{task_id}/start ──────────────────────────────────────
+
+@router.post("/{task_id:int}/start")
+async def start_task(
+    task_id: int,
+    agent: AgentContext = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_db),
+):
+    """Mark a claimed task as in_progress when the agent begins active work.
+
+    Transitions: claimed → in_progress
+    Only the agent who claimed the task may call this.
+    """
+    if task_id < 1:
+        resp = invalid_parameter_error("Invalid task ID", "Task IDs are positive integers.")
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    result = await session.execute(
+        select(Task.id, Task.status, Task.claimed_by_agent_id, Task.poster_id)
+        .where(Task.id == task_id)
+        .limit(1)
+    )
+    task = result.first()
+    if not task:
+        resp = task_not_found_error(task_id)
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Only the claiming agent may start the task
+    if task.claimed_by_agent_id != agent.id:
+        resp = forbidden_error(
+            "Only the agent who claimed this task can start it",
+            "Claim the task first via POST /api/v1/tasks/{task_id}/claims"
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Idempotent: already in_progress is fine
+    if task.status == "in_progress":
+        resp = success_response({"task_id": task_id, "status": "in_progress"})
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    if task.status != "claimed":
+        resp = invalid_status_error(
+            task_id, task.status,
+            "Task must be in 'claimed' state to start. Only claimed tasks can be transitioned to in_progress."
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    await session.execute(
+        update(Task)
+        .where(Task.id == task_id)
+        .values(status="in_progress", updated_at=datetime.now(timezone.utc))
+    )
+    await session.commit()
+
+    # Broadcast real-time event to poster
+    poster_id = task.poster_id
+    try:
+        event_broadcaster.broadcast(poster_id, "task_updated", {
+            "task_id": task_id,
+            "status": "in_progress",
+        })
+    except Exception:
+        pass
+
+    resp = success_response({"task_id": task_id, "status": "in_progress"})
+    return add_rate_limit_headers(resp, agent.rate_limit)
+
+
 # ─── POST /api/v1/tasks/{task_id}/rollback ───────────────────────────────────
 
 @router.post("/{task_id:int}/rollback")
@@ -1493,6 +1567,7 @@ async def get_review_config(
 
 class RemarkRequest(BaseModel):
     remark: str
+    evaluation: dict | None = None
 
 @router.post("/{task_id:int}/remarks")
 async def add_task_remark(
@@ -1502,7 +1577,11 @@ async def add_task_remark(
     session: AsyncSession = Depends(get_db),
 ):
     """
-    Allow an agent to post a remark/rejection reason for a task they evaluated but didn't claim.
+    Post an evaluation remark on a task. When the payload includes
+    ``evaluation.questions``, each question is also stored as a separate
+    ``message_type='question'`` TaskMessage with ``structured_data`` so the
+    frontend renders interactive answer widgets (yes/no buttons, radio
+    options, text input).
     """
     # Fetch task
     result = await session.execute(
@@ -1513,42 +1592,115 @@ async def add_task_remark(
         resp = task_not_found_error(task_id)
         return add_rate_limit_headers(resp, agent.rate_limit)
 
-    # Append to JSONB array using Python list logic
+    # Append to agent_remarks JSONB array (backward compat)
     current_remarks = task.agent_remarks or []
     new_remarks = list(current_remarks)
 
     timestamp = datetime.utcnow().isoformat() + "Z"
-    new_remarks.append({
+    remark_entry: dict = {
         "agent_id": agent.id,
         "agent_name": agent.name,
         "remark": data.remark,
         "timestamp": timestamp,
-    })
-
+    }
+    if data.evaluation:
+        remark_entry["evaluation"] = data.evaluation
+    new_remarks.append(remark_entry)
     task.agent_remarks = new_remarks
 
-    # Dual-write: also insert into task_messages
+    # Extract questions from evaluation (if any)
+    questions = []
+    if data.evaluation and isinstance(data.evaluation, dict):
+        questions = data.evaluation.get("questions", [])
+        if not isinstance(questions, list):
+            questions = []
+
+    # Message type routing:
+    # • "evaluation" — remark WITH questions (only shown in Feedback section, never in Chat)
+    # • "text"       — remark WITHOUT questions (plain acknowledgment, shown in Chat)
+    has_questions = bool(questions)
+    feedback_msg_type = "evaluation" if has_questions else "text"
+
     msg = TaskMessage(
         task_id=task_id,
         sender_type="agent",
         sender_id=agent.id,
         sender_name=agent.name,
         content=data.remark,
-        message_type="remark",
+        message_type=feedback_msg_type,
     )
     session.add(msg)
     await session.flush()
-    await session.commit()
 
-    # Broadcast to poster
+    # Broadcast the feedback message
     event_broadcaster.broadcast(task.poster_id, "message_created", {
         "task_id": task_id,
         "message_id": msg.id,
         "sender_type": "agent",
-        "message_type": "remark",
+        "message_type": feedback_msg_type,
     })
 
-    resp = success_response({"status": "remark added"})
+    # Create separate question messages with structured_data
+    question_ids = []
+    for q in questions:
+        if not isinstance(q, dict) or not q.get("text"):
+            continue
+
+        qtype = q.get("type", "multiple_choice")
+        # Map scout agent question types to structured_data format.
+        # question_id links back to agent_remarks so responses can be synced.
+        structured: dict = {"question_type": qtype, "question_id": q.get("id", "")}
+        if qtype == "multiple_choice":
+            opts = q.get("options", [])
+            if len(opts) >= 2:
+                structured["options"] = opts[:6]
+            else:
+                continue  # Skip invalid MCQ without options
+        elif qtype == "yes_no":
+            structured["options"] = ["Yes", "No"]
+        elif qtype == "text_input":
+            structured["prompt"] = q.get("placeholder", "Type your answer...")
+        elif qtype == "scale":
+            # Convert scale to multiple_choice for compatibility with the StructuredQuestion component
+            smin = int(q.get("scale_min", 1))
+            smax = int(q.get("scale_max", 5))
+            labels = q.get("scale_labels", ["Low", "High"])
+            low_label = labels[0] if labels else "Low"
+            high_label = labels[1] if len(labels) > 1 else "High"
+            structured["question_type"] = "multiple_choice"
+            structured["options"] = [
+                f"{i} — {low_label}" if i == smin
+                else f"{i} — {high_label}" if i == smax
+                else str(i)
+                for i in range(smin, smax + 1)
+            ]
+
+        q_msg = TaskMessage(
+            task_id=task_id,
+            sender_type="agent",
+            sender_id=agent.id,
+            sender_name=agent.name,
+            content=q["text"],
+            message_type="question",
+            structured_data=structured,
+        )
+        session.add(q_msg)
+        await session.flush()
+        question_ids.append(q_msg.id)
+
+        event_broadcaster.broadcast(task.poster_id, "message_created", {
+            "task_id": task_id,
+            "message_id": q_msg.id,
+            "sender_type": "agent",
+            "message_type": "question",
+        })
+
+    await session.commit()
+
+    resp = success_response({
+        "status": "remark added",
+        "question_message_ids": question_ids,
+    })
     return add_rate_limit_headers(resp, agent.rate_limit)
 
 

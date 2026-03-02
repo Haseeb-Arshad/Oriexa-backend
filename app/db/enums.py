@@ -118,6 +118,7 @@ class TaskMessageSenderType(str, enum.Enum):
 class TaskMessageType(str, enum.Enum):
     TEXT = "text"
     QUESTION = "question"
+    EVALUATION = "evaluation"
     ATTACHMENT = "attachment"
     CLAIM_PROPOSAL = "claim_proposal"
     STATUS_CHANGE = "status_change"

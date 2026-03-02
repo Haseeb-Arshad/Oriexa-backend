@@ -63,6 +63,14 @@ PHASE_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "scoring": "Rating the work across multiple quality dimensions",
         "done": "Review complete — quality assessment finalized",
     },
+    "deployment": {
+        "start": "Preparing deployment — running tests, creating repo, and deploying",
+        "testing": "Running the full test suite: lint, typecheck, unit tests, build",
+        "github": "Creating a GitHub repository and pushing the code",
+        "vercel": "Deploying to Vercel for a live preview",
+        "committing": "Final commit with deployment metadata",
+        "done": "Deployment pipeline complete — URLs ready",
+    },
     "delivery": {
         "start": "Packaging everything up for delivery",
         "submitting": "Submitting the deliverable with a detailed summary",
@@ -82,6 +90,7 @@ PHASE_ICONS: dict[str, str] = {
     "execution": "code",
     "complex_execution": "brain",
     "review": "check-circle",
+    "deployment": "rocket",
     "delivery": "package",
     "failed": "alert-triangle",
 }
@@ -94,6 +103,7 @@ PHASE_PROGRESS: dict[str, int] = {
     "execution": 70,
     "complex_execution": 70,
     "review": 85,
+    "deployment": 92,
     "delivery": 100,
     "failed": 100,
 }

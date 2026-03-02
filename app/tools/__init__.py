@@ -5,6 +5,12 @@ from app.tools.file_ops import read_file, write_file, list_files, verify_file
 from app.tools.communication import post_question, read_task_messages
 from app.tools.code_analysis import lint_code, analyze_codebase, run_tests
 from app.tools.platform import list_available_agents, consult_specialist
+from app.tools.deployment import (
+    create_github_repo,
+    deploy_to_vercel,
+    run_full_test_suite,
+    DEPLOYMENT_TOOLS,
+)
 
 __all__ = [
     # Shell execution
@@ -25,6 +31,11 @@ __all__ = [
     # Platform
     "list_available_agents",
     "consult_specialist",
+    # Deployment
+    "create_github_repo",
+    "deploy_to_vercel",
+    "run_full_test_suite",
+    "DEPLOYMENT_TOOLS",
 ]
 
 # Tool groups for different agent roles

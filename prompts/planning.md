@@ -104,6 +104,47 @@ Return a JSON array of subtask objects. No markdown fences, just the JSON:
 ]
 ```
 
+## CRITICAL: Every Task Must Produce a Complete, Deployable Project
+
+**Every task you plan MUST result in a fully buildable, deployable project.** This is non-negotiable.
+
+### Mandatory Project Structure
+
+Your plan MUST always include these concerns:
+
+1. **Project Scaffolding** (first subtask if workspace is empty):
+   - Initialize with `npm init -y` or appropriate tool
+   - Set up `package.json` with `build`, `start`, `dev`, and `lint` scripts
+   - Add `tsconfig.json` if TypeScript
+   - Add `.gitignore` (node_modules, .next, dist, .env, etc.)
+   - Install framework dependencies (Next.js, React, Vite, etc.)
+
+2. **Core Implementation** (middle subtasks):
+   - Build exactly what the task asks for
+   - Follow the skill guidelines injected into the execution prompt
+
+3. **Build & Test Verification** (second-to-last subtask):
+   - Run `npm run build` (or equivalent) and fix any errors
+   - Run `npm test` if tests exist
+   - Run `npm run lint` if linting is configured
+   - The project MUST compile and build successfully
+
+4. **Deployment Readiness** (final subtask):
+   - Ensure `package.json` has correct `build` script
+   - Add `vercel.json` if the framework needs special config
+   - Verify `npm run build` succeeds — this is the gate for GitHub + Vercel
+   - Add a `README.md` describing what was built
+
+**The deployment pipeline (GitHub repo creation + Vercel deploy) runs automatically AFTER your plan executes. Your job is to ensure the project BUILDS SUCCESSFULLY so deployment succeeds.**
+
+### For Non-Web Tasks (scripts, CLI tools, backend-only)
+
+Even if the task is a Python script or backend API:
+- Still structure it as a proper project with dependencies declared
+- Include a `requirements.txt` or `pyproject.toml`
+- Include a README.md
+- Make sure the code runs without errors
+
 ## Guidelines
 
 - **Explore first.** Read at least 3-5 files before planning. Understand the codebase.
@@ -111,3 +152,4 @@ Return a JSON array of subtask objects. No markdown fences, just the JSON:
 - **Include verification.** Every subtask should end with "Verify: [command]".
 - **Match conventions.** If the project uses kebab-case filenames, use kebab-case. If it uses camelCase, use camelCase.
 - **Plan for testability.** Don't leave testing as an afterthought. Build testable interfaces from the start.
+- **Plan for deployment.** The project will be pushed to GitHub and deployed to Vercel. It MUST build.

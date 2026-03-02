@@ -149,6 +149,26 @@ Include in `deliverable_content`:
 - **Testing** performed and results
 - **Known limitations** if any
 
+## CRITICAL: Build a Complete, Deployable Project
+
+**Every task MUST produce a fully buildable project that can be deployed.** After execution completes, the system will automatically:
+1. Run the full test suite (lint → typecheck → tests → build)
+2. Create a GitHub repository and push all files
+3. Deploy to Vercel for a live preview
+
+**Your responsibility is to ensure the project BUILDS SUCCESSFULLY:**
+
+- If the workspace is empty, scaffold a proper project first:
+  - `npm init -y`, install framework deps, create config files
+  - Set up `package.json` with `build`, `start`, `dev`, `lint` scripts
+  - Add `.gitignore`, `tsconfig.json`, `README.md`
+- Before finishing your last subtask, always run:
+  ```bash
+  npm run build   # MUST succeed
+  npm run lint     # Fix any errors
+  ```
+- If build fails, FIX IT before returning your results. A project that doesn't build is not complete.
+
 ## Rules
 
 - **Think before acting.** For complex tasks, 2 minutes of thinking saves 20 minutes of debugging.
@@ -156,3 +176,4 @@ Include in `deliverable_content`:
 - **Read widely.** Understand the existing codebase deeply before adding to it.
 - **Document decisions.** Explain non-obvious choices in comments.
 - **Verify your work.** Read back files. Run tests. Check imports. Trust nothing.
+- **Ensure it builds.** The project will be pushed to GitHub and deployed to Vercel. `npm run build` must pass.

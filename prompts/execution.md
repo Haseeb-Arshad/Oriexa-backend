@@ -116,10 +116,31 @@ Return JSON with:
 }
 ```
 
+## CRITICAL: Build a Complete, Deployable Project
+
+**Every task MUST produce a fully buildable project that can be deployed.** After execution completes, the system will automatically:
+1. Run the full test suite (lint → typecheck → tests → build)
+2. Create a GitHub repository and push all files
+3. Deploy to Vercel for a live preview
+
+**Your responsibility is to ensure the project BUILDS SUCCESSFULLY:**
+
+- If the workspace is empty, scaffold a proper project first:
+  - `npm init -y`, install framework deps, create config files
+  - Set up `package.json` with `build`, `start`, `dev`, `lint` scripts
+  - Add `.gitignore`, `tsconfig.json`, `README.md`
+- Before finishing your last subtask, always run:
+  ```bash
+  npm run build   # MUST succeed
+  npm run lint     # Fix any errors
+  ```
+- If build fails, FIX IT before returning your results. A project that doesn't build is not complete.
+
 ## Rules
 
 - **Test everything you write.** Untested code is unfinished code.
 - **Read before writing.** Understand existing patterns before adding new code.
 - **Small iterations.** Write one file → test it → write next file. Not: write 10 files → hope they work.
 - **Use the shell.** It's your best friend for validation. `python -c`, `node -e`, `curl`, `grep` — use them constantly.
+- **Ensure it builds.** The project will be pushed to GitHub and deployed to Vercel. `npm run build` must pass.
 - Stay focused on your assigned subtask. Don't modify files outside scope.

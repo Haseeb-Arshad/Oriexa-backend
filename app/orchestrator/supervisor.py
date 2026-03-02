@@ -39,8 +39,19 @@ async def _fetch_messages_for_task(task_id: int) -> list[dict[str, Any]]:
             )
             resp.raise_for_status()
             body = resp.json()
-            data = body.get("data", body)
-            return data if isinstance(data, list) else []
+            # Handle multiple response formats:
+            #   {"messages": [...]}  — Next.js user API format
+            #   {"data": [...]}      — generic wrapper format
+            #   [...]                — raw array
+            if isinstance(body, list):
+                return body
+            if isinstance(body, dict):
+                for key in ("messages", "data"):
+                    candidate = body.get(key)
+                    if isinstance(candidate, list):
+                        return candidate
+            logger.warning("Unexpected messages response format for task %d: %s", task_id, type(body))
+            return []
     except Exception as exc:
         logger.warning("Failed to fetch messages for task %d: %s", task_id, exc)
         return []
@@ -96,12 +107,18 @@ async def triage_node(state: TaskState) -> dict[str, Any]:
     progress_tracker.add_step(eid, "triage", "done", detail=detail,
         metadata={"complexity": complexity, "clarity_score": result.get("clarity_score", 0)})
 
+    # Extract task_type if the triage agent returned it
+    task_type = result.get("task_type", "general")
+    if task_type not in ("frontend", "backend", "fullstack", "general"):
+        task_type = "general"
+
     return {
         "phase": "triage",
         "clarity_score": result.get("clarity_score", 0.5),
         "complexity": complexity,
         "needs_clarification": needs_clarification,
         "triage_reasoning": reasoning,
+        "task_type": task_type,
         "total_prompt_tokens": state.get("total_prompt_tokens", 0) + result.get("prompt_tokens", 0),
         "total_completion_tokens": state.get("total_completion_tokens", 0) + result.get("completion_tokens", 0),
     }
@@ -123,12 +140,15 @@ async def clarification_node(state: TaskState) -> dict[str, Any]:
     questions = result.get("questions", [])
     clarification_needed = result.get("clarification_needed", True)
     message_id = result.get("clarification_message_id")
+    message_ids = result.get("clarification_message_ids", [])
     question_summary = result.get("question_summary", "")
+
+    q_count = len(message_ids) if message_ids else (1 if message_id else 0)
 
     if clarification_needed and message_id:
         progress_tracker.add_step(eid, "clarification", "done",
-            detail=f"Posted question to the poster — {question_summary}",
-            metadata={"question_count": len(questions), "message_id": message_id})
+            detail=f"Posted {q_count} question(s) to the poster — {question_summary}",
+            metadata={"question_count": q_count, "message_ids": message_ids})
     else:
         progress_tracker.add_step(eid, "clarification", "done",
             detail="Task is clear enough to proceed directly to planning",
@@ -139,32 +159,90 @@ async def clarification_node(state: TaskState) -> dict[str, Any]:
         "clarification_questions": questions,
         "clarification_message_sent": clarification_needed and message_id is not None,
         "clarification_message_id": message_id,
+        "clarification_message_ids": message_ids,
         "waiting_for_response": clarification_needed and message_id is not None,
         "total_prompt_tokens": state.get("total_prompt_tokens", 0) + result.get("prompt_tokens", 0),
         "total_completion_tokens": state.get("total_completion_tokens", 0) + result.get("completion_tokens", 0),
     }
 
 
-async def wait_for_response_node(state: TaskState) -> dict[str, Any]:
-    """Poll for the poster's response to the clarification question.
+def _check_messages_for_response(
+    messages: list[dict[str, Any]],
+    question_message_ids: list[int],
+) -> str | None:
+    """Check fetched messages for a poster response to any of the question IDs.
 
-    Checks every 15 seconds for up to 15 minutes. Looks for:
-    1. structured_data.responded_at on the original question message
-    2. A poster reply message with parent_id matching the question
+    Detection tiers (checked in order):
+    1. structured_data.responded_at on any question message (UI button response)
+    2. Poster reply with parent_id matching any question message
+    3. Any poster message with id > smallest question message id
+
+    Returns the response text if found, else None.
+    """
+    if not question_message_ids:
+        return None
+
+    min_question_id = min(question_message_ids)
+
+    # Tier 1: structured_data.responded_at on any question message
+    for msg in messages:
+        if msg.get("id") in question_message_ids:
+            sd = msg.get("structured_data") or {}
+            if sd.get("responded_at"):
+                return sd.get("response", "")
+
+    # Tier 2: poster reply with parent_id matching any question
+    for msg in messages:
+        if (msg.get("sender_type") == "poster"
+                and msg.get("parent_id") in question_message_ids):
+            return msg.get("content", "")
+
+    # Tier 3: any poster message posted after the earliest question
+    poster_msgs = [
+        m for m in messages
+        if m.get("sender_type") == "poster"
+        and isinstance(m.get("id"), int)
+        and m["id"] > min_question_id
+    ]
+    if poster_msgs:
+        # Concatenate all poster responses (they may have answered multiple questions)
+        return "\n".join(m.get("content", "") for m in poster_msgs if m.get("content"))
+
+    return None
+
+
+async def wait_for_response_node(state: TaskState) -> dict[str, Any]:
+    """Poll for the poster's response to clarification questions.
+
+    Checks every 15 seconds for up to 15 minutes. Detects responses via:
+    1. structured_data.responded_at on any question message (UI interaction)
+    2. Poster reply message with parent_id matching any question
+    3. Any poster message posted after the questions
     """
     message_id = state.get("clarification_message_id")
+    message_ids = state.get("clarification_message_ids", [])
     task_id = state.get("oriexa_task_id") or state.get("task_data", {}).get("id")
     execution_id = state.get("execution_id", 0)
+
+    # Build the full list of question IDs to track
+    all_question_ids = list(message_ids) if message_ids else []
+    if message_id and message_id not in all_question_ids:
+        all_question_ids.append(message_id)
 
     # Set CLARIFYING status so UI can show it
     await _update_execution_status(execution_id, "clarifying")
 
     progress_tracker.add_step(execution_id, "clarification", "waiting",
-        detail="Waiting for the poster to respond to the question...")
+        detail=f"Waiting for the poster to respond ({len(all_question_ids)} question(s) posted)...")
 
     if not task_id:
         logger.warning("wait_for_response_node: no task_id in state")
         return {"waiting_for_response": False, "clarification_response": None, "phase": "planning"}
+
+    logger.info(
+        "wait_for_response_node: task_id=%s question_ids=%s — starting poll",
+        task_id, all_question_ids,
+    )
 
     # Poll every 15s for up to 15 minutes (60 iterations)
     max_polls = 60
@@ -173,59 +251,33 @@ async def wait_for_response_node(state: TaskState) -> dict[str, Any]:
     for poll in range(max_polls):
         messages = await _fetch_messages_for_task(task_id)
 
-        if message_id:
-            # Check if the original question has a responded_at in structured_data
-            question_msg = next((m for m in messages if m.get("id") == message_id), None)
-            if question_msg:
-                sd = question_msg.get("structured_data") or {}
-                if sd.get("responded_at"):
-                    response = sd.get("response", "")
-                    progress_tracker.add_step(execution_id, "clarification", "responded",
-                        detail=f"Poster responded: {response[:100]}...")
-                    return {
-                        "waiting_for_response": False,
-                        "clarification_response": response,
-                        "phase": "planning",
-                    }
-
-            # Check for a poster reply with parent_id matching our question
-            reply = next(
-                (m for m in messages
-                 if m.get("parent_id") == message_id
-                 and m.get("sender_type") == "poster"),
-                None,
+        if poll == 0:
+            logger.info(
+                "wait_for_response_node: poll #%d fetched %d messages for task %s",
+                poll, len(messages), task_id,
             )
-            if reply:
-                response = reply.get("content", "")
-                progress_tracker.add_step(execution_id, "clarification", "responded",
-                    detail=f"Poster responded: {response[:100]}...")
-                return {
-                    "waiting_for_response": False,
-                    "clarification_response": response,
-                    "phase": "planning",
-                }
 
-        # Also check for any poster message posted after the question
-        if messages and message_id:
-            poster_msgs = [
-                m for m in messages
-                if m.get("sender_type") == "poster"
-                and isinstance(m.get("id"), int)
-                and m["id"] > message_id
-            ]
-            if poster_msgs:
-                response = poster_msgs[-1].get("content", "")
-                progress_tracker.add_step(execution_id, "clarification", "responded",
-                    detail=f"Poster responded: {response[:100]}...")
-                return {
-                    "waiting_for_response": False,
-                    "clarification_response": response,
-                    "phase": "planning",
-                }
+        response = _check_messages_for_response(messages, all_question_ids)
+        if response is not None:
+            logger.info(
+                "wait_for_response_node: response detected on poll #%d for task %s",
+                poll, task_id,
+            )
+            progress_tracker.add_step(execution_id, "clarification", "responded",
+                detail=f"Poster responded: {response[:100]}{'...' if len(response) > 100 else ''}")
+            return {
+                "waiting_for_response": False,
+                "clarification_response": response,
+                "phase": "planning",
+            }
 
         await asyncio.sleep(poll_interval)
 
     # Timeout — proceed without response
+    logger.warning(
+        "wait_for_response_node: timeout after %d polls for task %s",
+        max_polls, task_id,
+    )
     progress_tracker.add_step(execution_id, "clarification", "timeout",
         detail="No response received after 15 minutes — proceeding with planning based on available info")
 
@@ -440,6 +492,152 @@ async def review_node(state: TaskState) -> dict[str, Any]:
     }
 
 
+async def deployment_node(state: TaskState) -> dict[str, Any]:
+    """Run tests, create GitHub repo, and deploy to Vercel.
+
+    This is a deterministic node — no LLM calls. It runs deployment tools
+    programmatically and collects results. Failures are non-blocking.
+    """
+    from app.tools.deployment import (
+        create_github_repo,
+        deploy_to_vercel,
+        run_full_test_suite,
+    )
+
+    eid = _eid(state)
+    workspace_path = state.get("workspace_path", "")
+    task_data = state.get("task_data", {})
+    task_type = state.get("task_type", "general")
+    execution_id = state.get("execution_id", 0)
+
+    progress_tracker.add_step(eid, "deployment", "start",
+        detail="Running the deployment pipeline: tests, GitHub, Vercel")
+
+    result: dict[str, Any] = {
+        "phase": "deployment",
+        "github_repo_url": None,
+        "vercel_preview_url": None,
+        "vercel_claim_url": None,
+        "test_results": {},
+    }
+
+    # 1. Run full test suite
+    progress_tracker.add_step(eid, "deployment", "testing",
+        detail="Running lint, typecheck, unit tests, and build verification")
+
+    try:
+        test_results = await run_full_test_suite(workspace_path)
+        result["test_results"] = test_results
+        summary = test_results.get("summary", "No tests run")
+        progress_tracker.add_step(eid, "deployment", "testing",
+            detail=f"Test suite complete: {summary}",
+            metadata=test_results)
+    except Exception as exc:
+        logger.warning("Deployment: test suite failed: %s", exc)
+        result["test_results"] = {"summary": f"Error: {exc}", "error": str(exc)}
+
+    # 2. Create GitHub repo (MANDATORY — all deliveries must be on GitHub)
+    progress_tracker.add_step(eid, "deployment", "github",
+        detail="Creating GitHub repository and pushing code")
+
+    if not settings.GITHUB_TOKEN:
+        logger.warning("GITHUB_TOKEN is not configured — GitHub deployment will be skipped")
+        progress_tracker.add_step(eid, "deployment", "github",
+            detail="GITHUB_TOKEN not configured — set it in .env to enable GitHub deployment")
+    else:
+        task_title = task_data.get("title", "delivery")
+        # Slugify the title
+        title_slug = task_title.lower()[:40]
+        title_slug = title_slug.replace(" ", "-")
+        title_slug = "".join(c for c in title_slug if c.isalnum() or c == "-")
+        title_slug = title_slug.strip("-")
+
+        repo_name = f"{settings.GITHUB_REPO_PREFIX}-{execution_id}-{title_slug}"
+        description = f"Oriexa delivery for: {task_title}"
+
+        try:
+            gh_result = await create_github_repo(
+                repo_name=repo_name,
+                description=description,
+                workspace_path=workspace_path,
+            )
+            if gh_result.get("success"):
+                result["github_repo_url"] = gh_result["repo_url"]
+                progress_tracker.add_step(eid, "deployment", "github",
+                    detail=f"Repository created: {gh_result['repo_url']}")
+            else:
+                error_msg = gh_result.get("error", "unknown error")
+                logger.error("GitHub repo creation failed: %s", error_msg)
+                progress_tracker.add_step(eid, "deployment", "github",
+                    detail=f"GitHub repo creation FAILED: {error_msg}")
+        except Exception as exc:
+            logger.error("GitHub repo creation error: %s", exc)
+            progress_tracker.add_step(eid, "deployment", "github",
+                detail=f"GitHub error: {exc}")
+
+    # 3. Deploy to Vercel (MANDATORY for all coding tasks)
+    progress_tracker.add_step(eid, "deployment", "vercel",
+        detail="Deploying to Vercel for live preview")
+
+    if not settings.VERCEL_TOKEN and not settings.VERCEL_DEPLOY_ENDPOINT:
+        logger.warning("Neither VERCEL_TOKEN nor VERCEL_DEPLOY_ENDPOINT configured — Vercel deployment will be skipped")
+        progress_tracker.add_step(eid, "deployment", "vercel",
+            detail="VERCEL_TOKEN not configured — set it in .env to enable Vercel deployment")
+    else:
+        try:
+            vercel_result = await deploy_to_vercel(workspace_path)
+            if vercel_result.get("success"):
+                result["vercel_preview_url"] = vercel_result.get("preview_url")
+                result["vercel_claim_url"] = vercel_result.get("claim_url")
+                progress_tracker.add_step(eid, "deployment", "vercel",
+                    detail=f"Deployed! Preview: {vercel_result.get('preview_url')}")
+            else:
+                error_msg = vercel_result.get("error", "unknown error")
+                if "No deployable framework" in error_msg:
+                    progress_tracker.add_step(eid, "deployment", "vercel",
+                        detail="No framework detected — project may not be deployable to Vercel")
+                else:
+                    logger.warning("Vercel deploy failed: %s", error_msg)
+                    progress_tracker.add_step(eid, "deployment", "vercel",
+                        detail=f"Vercel deploy failed: {error_msg}")
+        except Exception as exc:
+            logger.warning("Vercel deployment error: %s", exc)
+            progress_tracker.add_step(eid, "deployment", "vercel",
+                detail=f"Vercel error: {exc}")
+
+    # 4. Final git commit with deployment metadata
+    if workspace_path:
+        git = GitHelper(workspace_path)
+        commit_parts = ["Phase: Deployment Complete"]
+        if result["github_repo_url"]:
+            commit_parts.append(f"Repo: {result['github_repo_url']}")
+        if result["vercel_preview_url"]:
+            commit_parts.append(f"Preview: {result['vercel_preview_url']}")
+        test_summary = result.get("test_results", {}).get("summary", "")
+        if test_summary:
+            commit_parts.append(f"Tests: {test_summary}")
+        await git.add_commit_push(" | ".join(commit_parts))
+
+    # Build summary for progress
+    parts = []
+    if result["github_repo_url"]:
+        parts.append("GitHub repo created")
+    if result["vercel_preview_url"]:
+        parts.append("Vercel preview deployed")
+    test_summary = result.get("test_results", {}).get("summary", "")
+    if test_summary:
+        parts.append(f"Tests: {test_summary}")
+    detail = ". ".join(parts) if parts else "Deployment pipeline complete."
+
+    progress_tracker.add_step(eid, "deployment", "done", detail=detail,
+        metadata={
+            "github_repo_url": result["github_repo_url"],
+            "vercel_preview_url": result["vercel_preview_url"],
+        })
+
+    return result
+
+
 async def delivery_node(state: TaskState) -> dict[str, Any]:
     """Submit the deliverable to Oriexa."""
     from app.orchestrator.lifecycle import deliver_task
@@ -525,7 +723,7 @@ def route_after_planning(state: TaskState) -> str:
 
 def route_after_review(state: TaskState) -> str:
     if state.get("review_passed", False):
-        return "delivery"
+        return "deployment"
     attempt = state.get("attempt_count", 0)
     max_attempts = state.get("max_attempts", 3)
     if attempt < max_attempts:
@@ -549,6 +747,7 @@ def build_supervisor_graph() -> StateGraph:
     graph.add_node("execution", execution_node)
     graph.add_node("complex_execution", complex_execution_node)
     graph.add_node("review", review_node)
+    graph.add_node("deployment", deployment_node)
     graph.add_node("delivery", delivery_node)
     graph.add_node("failed", failed_node)
 
@@ -570,10 +769,11 @@ def build_supervisor_graph() -> StateGraph:
     graph.add_edge("execution", "review")
     graph.add_edge("complex_execution", "review")
     graph.add_conditional_edges("review", route_after_review, {
-        "delivery": "delivery",
+        "deployment": "deployment",
         "planning": "planning",
         "failed": "failed",
     })
+    graph.add_edge("deployment", "delivery")
     graph.add_edge("delivery", END)
     graph.add_edge("failed", END)
 

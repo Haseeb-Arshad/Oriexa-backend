@@ -61,6 +61,13 @@ class ExecutionAgent(BaseAgent):
             f"Execution plan:\n{plan_summary}\n"
         )
 
+        # Inject skills based on task type (mandatory frontend-design + context-aware extras)
+        from app.orchestrator.skills import skill_resolver
+        task_type = state.get("task_type", "general")
+        skill_injection = skill_resolver.resolve(task_type)
+        if skill_injection:
+            execution_prompt += skill_injection
+
         if completed_summary:
             execution_prompt += f"\nPreviously completed subtasks:\n{completed_summary}\n"
 

@@ -43,7 +43,7 @@ class TestGraphRouting:
 
     def test_route_after_review_passed(self):
         state = {"review_passed": True}
-        assert route_after_review(state) == "delivery"
+        assert route_after_review(state) == "deployment"
 
     def test_route_after_review_failed_retry(self):
         state = {"review_passed": False, "attempt_count": 1, "max_attempts": 3}
@@ -71,7 +71,7 @@ class TestGraphStructure:
         expected = {
             "triage", "clarification", "wait_for_response",
             "planning", "execution", "complex_execution",
-            "review", "delivery", "failed",
+            "review", "deployment", "delivery", "failed",
         }
         assert expected.issubset(node_names)
 

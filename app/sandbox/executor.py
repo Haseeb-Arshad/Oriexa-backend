@@ -120,6 +120,10 @@ class SandboxExecutor:
         safe_keys = {"PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "TMPDIR"}
         env = {k: v for k, v in os.environ.items() if k in safe_keys}
         env["PATH"] = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+        # Pass through GH_TOKEN so gh CLI can authenticate for repo creation
+        gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+        if gh_token:
+            env["GH_TOKEN"] = gh_token
         return env
 
     @staticmethod

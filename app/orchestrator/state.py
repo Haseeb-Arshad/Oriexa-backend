@@ -42,6 +42,7 @@ class TaskState(TypedDict, total=False):
     clarification_questions: list[str]
     clarification_message_sent: bool
     clarification_message_id: int | None
+    clarification_message_ids: list[int]
     clarification_response: str | None
     waiting_for_response: bool
 
@@ -65,6 +66,15 @@ class TaskState(TypedDict, total=False):
     review_score: int
     review_passed: bool
     review_feedback: str
+
+    # Task type classification
+    task_type: str  # "frontend" | "backend" | "fullstack" | "general"
+
+    # Deployment pipeline results
+    github_repo_url: str | None
+    vercel_preview_url: str | None
+    vercel_claim_url: str | None
+    test_results: dict[str, Any]
 
     # Retry tracking
     attempt_count: int

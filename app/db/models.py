@@ -100,7 +100,7 @@ task_msg_sender_type_enum = PgEnum(
     name="task_msg_sender_type", create_type=False,
 )
 task_msg_type_enum = PgEnum(
-    "text", "question", "attachment", "claim_proposal",
+    "text", "question", "evaluation", "attachment", "claim_proposal",
     "status_change", "revision_request", "remark",
     name="task_msg_type", create_type=False,
 )

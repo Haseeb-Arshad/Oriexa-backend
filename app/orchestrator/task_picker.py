@@ -20,6 +20,73 @@ from app.oriexa_client.client import OriexaClient
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Coding-task filter — only pick up development/coding tasks
+# ---------------------------------------------------------------------------
+
+NON_CODING_INDICATORS = [
+    "write a blog",
+    "write an article",
+    "social media",
+    "marketing copy",
+    "translate",
+    "transcribe",
+    "data entry",
+    "proofread",
+    "content writing",
+    "seo optimization",
+    "graphic design only",
+    "logo design only",
+    "video editing",
+    "voiceover",
+    "virtual assistant",
+]
+
+CODING_INDICATORS = [
+    "build", "develop", "implement", "code", "program",
+    "api", "endpoint", "database", "frontend", "backend",
+    "react", "next.js", "vue", "svelte", "angular",
+    "python", "javascript", "typescript", "html", "css",
+    "deploy", "docker", "ci/cd", "devops",
+    "bug fix", "refactor", "test", "script",
+    "web app", "website", "dashboard", "landing page",
+    "component", "feature", "integration",
+    "fastapi", "express", "django", "flask",
+    "node.js", "npm", "package",
+]
+
+
+def _is_coding_task(task_data: dict[str, Any]) -> bool:
+    """Determine if a task is a coding/development task.
+
+    Uses keyword heuristics on title, description, and category.
+    Conservative: defaults to True for ambiguous tasks.
+    """
+    title = (task_data.get("title") or "").lower()
+    description = (task_data.get("description") or "").lower()
+    category = (task_data.get("category") or "").lower()
+    text = f"{title} {description} {category}"
+
+    # Check for explicit non-coding indicators
+    for indicator in NON_CODING_INDICATORS:
+        if indicator in text:
+            has_coding_signal = any(ci in text for ci in CODING_INDICATORS)
+            if not has_coding_signal:
+                return False
+
+    # Check for coding indicators
+    for indicator in CODING_INDICATORS:
+        if indicator in text:
+            return True
+
+    # Explicit development categories
+    if category in ("development", "engineering", "coding", "programming", "web development"):
+        return True
+
+    # Default: assume coding (conservative — don't skip ambiguous tasks)
+    return True
+
+
 # All webhook events the agent subscribes to
 WEBHOOK_EVENTS = [
     "task.new_match",
@@ -129,6 +196,11 @@ class TaskPickerDaemon:
             if task_id and self.pool.has_capacity():
                 task_data = await self.client.get_task(task_id)
                 if task_data:
+                    # Filter: only process coding/development tasks
+                    if not _is_coding_task(task_data):
+                        logger.info("Skipping non-coding webhook task %d", task_id)
+                        return
+
                     # Check not already tracked
                     async with async_session() as session:
                         result = await session.execute(
@@ -259,6 +331,16 @@ class TaskPickerDaemon:
         for task_data in new_tasks:
             if not self.pool.has_capacity():
                 break
+
+            # Filter: only process coding/development tasks
+            if not _is_coding_task(task_data):
+                logger.info(
+                    "Skipping non-coding task %d: %s",
+                    task_data.get("id", 0),
+                    task_data.get("title", "Untitled")[:80],
+                )
+                continue
+
             await self._process_task(task_data)
 
     async def _process_task(self, task_data: dict[str, Any]) -> None:

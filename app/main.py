@@ -33,6 +33,19 @@ from app.orchestrator.task_picker import TaskPickerDaemon
 orch_logger = logging.getLogger("app.orchestrator")
 
 
+def _validate_deployment_config() -> None:
+    """Log warnings for missing mandatory deployment configuration."""
+    warnings = []
+    if not settings.GITHUB_TOKEN:
+        warnings.append("GITHUB_TOKEN is not set — GitHub deployment will fail for all tasks")
+    if not settings.VERCEL_TOKEN and not settings.VERCEL_DEPLOY_ENDPOINT:
+        warnings.append("Neither VERCEL_TOKEN nor VERCEL_DEPLOY_ENDPOINT is set — Vercel deployment will fail for all tasks")
+    if not settings.GITHUB_ORG:
+        warnings.append("GITHUB_ORG is not set — GitHub repos will be created in personal account")
+    for w in warnings:
+        orch_logger.warning("[DEPLOYMENT CONFIG] %s", w)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Setup structured logging
@@ -45,6 +58,9 @@ async def lifespan(app: FastAPI):
             cleanup_expired()
 
     cleanup_task = asyncio.create_task(rate_limit_cleanup_loop())
+
+    # Validate mandatory deployment configuration
+    _validate_deployment_config()
 
     # Start orchestrator daemon if API key is configured
     daemon = None

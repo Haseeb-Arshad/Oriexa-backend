@@ -43,6 +43,7 @@ class TriageAgent(BaseAgent):
                 "- clarity_score: float between 0.0 and 1.0\n"
                 "- complexity: one of \"low\", \"medium\", \"high\"\n"
                 "- needs_clarification: boolean\n"
+                "- task_type: one of \"frontend\", \"backend\", \"fullstack\", \"general\"\n"
                 "- reasoning: brief explanation\n\n"
                 "Return ONLY valid JSON, no markdown fences.\n\n"
                 f"Task data:\n{task_description}"
@@ -90,17 +91,23 @@ class TriageAgent(BaseAgent):
         needs_clarification = bool(result.get("needs_clarification", clarity_score < 0.6))
         reasoning = str(result.get("reasoning", ""))
 
+        task_type = result.get("task_type", "general")
+        if task_type not in ("frontend", "backend", "fullstack", "general"):
+            task_type = "general"
+
         logger.info(
-            "TriageAgent result: clarity=%.2f complexity=%s needs_clarification=%s",
+            "TriageAgent result: clarity=%.2f complexity=%s needs_clarification=%s task_type=%s",
             clarity_score,
             complexity,
             needs_clarification,
+            task_type,
         )
 
         return {
             "clarity_score": clarity_score,
             "complexity": complexity,
             "needs_clarification": needs_clarification,
+            "task_type": task_type,
             "reasoning": reasoning,
             **self.get_token_usage(),
         }
