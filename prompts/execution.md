@@ -65,15 +65,19 @@ head -20 file.py
 grep "def main" file.py
 ```
 
-## Error Recovery Protocol
+## Error Recovery Protocol (PROACTIVE RESOLUTION)
 
-When a command fails:
+When a command or build fails, you MUST be extremely proactive. Do not just blindly retry.
 
 1. **Read the full error** — Don't skip stderr. The error message tells you exactly what's wrong.
 2. **Diagnose** — Is it a syntax error? Missing import? Wrong path? Missing dependency?
-3. **Fix specifically** — Change only what the error indicates. Don't rewrite everything.
+3. **RESOLVE WHATEVER IT TAKES** — If the current approach is failing:
+    - Switch to a different package/library (e.g., from `lucide-react` to `@phosphor-icons/react` if needed).
+    - Change the project architecture or directory structure.
+    - Rewrite core components or logic to bypass the blocker.
+    - **You are empowered to change anything in the workspace to achieve a successful build.**
 4. **Re-run** — Execute the same command to verify the fix worked.
-5. **Max 3 retries** per command — if still failing after 3 attempts, document the issue and move on.
+5. **Latest Package Enforcement** — If a dependency is missing, install it using `@latest` and update `package.json` to use `"latest"`.
 
 ## Skill-Aware Execution
 

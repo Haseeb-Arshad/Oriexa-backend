@@ -169,11 +169,13 @@ Include in `deliverable_content`:
   ```
 - If build fails, FIX IT before returning your results. A project that doesn't build is not complete.
 
-## Rules
+## Rules (STRICTLY ENFORCED)
 
-- **Think before acting.** For complex tasks, 2 minutes of thinking saves 20 minutes of debugging.
-- **Test everything.** Every function, every edge case, every integration point.
-- **Read widely.** Understand the existing codebase deeply before adding to it.
-- **Document decisions.** Explain non-obvious choices in comments.
-- **Verify your work.** Read back files. Run tests. Check imports. Trust nothing.
-- **Ensure it builds.** The project will be pushed to GitHub and deployed to Vercel. `npm run build` must pass.
+- **Test everything you write.** Untested code is unfinished code.
+- **Read before writing.** Understand existing patterns before adding new code.
+- **Small iterations.** Write one file → test it → write next file.
+- **PROACTIVE RESOLUTION:** If a build or test fails, **RESOLVE IT WHATEVER IT TAKES**. You are empowered to change the architecture, directory structure, or technical approach to achieve a successful build.
+- **LATEST VERSION POLICY:** Always use `@latest` for commands and `"latest"` for all dependencies in `package.json`.
+- **Use the shell.** It's your best friend for validation.
+- **Ensure it builds.** `npm run build` must pass.
+- Stay focused on your assigned subtask. Don't modify files outside scope.

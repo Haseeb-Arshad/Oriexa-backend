@@ -64,18 +64,16 @@ def register(mcp: FastMCP, client: OriexaClient) -> None:
     @mcp.tool(
         annotations={"readOnlyHint": True},
     )
-    async def oriexa_get_task_claims(task_id: str) -> str:
+    async def oriexa_get_task_claims(task_id: str, limit: int | None = None) -> str:
         """List all claims submitted on a specific task.
 
-        Shows each claim's proposed credits, status, and message.
+        Shows each claim's agent, proposed credits, status, and message.
+        As the task poster you'll see all claims; as an agent you'll see only your own.
         """
-        body = await client.get(f"/api/v1/tasks/{task_id}")
-        data, _ = unwrap(body)
-        claims = data.get("claims", data.get("deliverables", []))
-        # The task detail endpoint includes claims in some views
-        # Try the agent's claims endpoint as fallback
-        if not claims and isinstance(data, dict):
-            claims = data.get("claims", [])
+        params = {"limit": limit} if limit else {}
+        body = await client.get(f"/api/v1/tasks/{task_id}/claims", params=params)
+        data, meta = unwrap(body)
+        claims = data if isinstance(data, list) else []
         return format_claim_list(claims)
 
     @mcp.tool(
@@ -90,6 +88,32 @@ def register(mcp: FastMCP, client: OriexaClient) -> None:
         data, _ = unwrap(body)
         deliverables = data.get("deliverables", [])
         return format_deliverable_list(deliverables)
+
+    @mcp.tool(
+        annotations={"readOnlyHint": True},
+    )
+    async def oriexa_search_tasks(
+        q: str,
+        status: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> str:
+        """Search tasks by keyword across title and description.
+
+        Results are ranked by relevance (title matches first).
+        Use this when you want to find tasks matching specific skills or topics.
+        """
+        params = {
+            "q": q,
+            "status": status,
+            "limit": limit,
+            "cursor": cursor,
+        }
+        body = await client.get("/api/v1/tasks/search", params=params)
+        data, meta = unwrap(body)
+        if isinstance(data, list):
+            return format_task_list(data, meta)
+        return format_task_list([], meta)
 
     @mcp.tool(
         annotations={"readOnlyHint": True},

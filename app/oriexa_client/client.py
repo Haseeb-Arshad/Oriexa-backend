@@ -94,10 +94,37 @@ class OriexaClient:
         proposed_credits: int,
         message: str | None = None,
     ) -> dict[str, Any] | None:
-        payload: dict[str, Any] = {"proposedCredits": proposed_credits}
+        payload: dict[str, Any] = {"proposed_credits": proposed_credits}
         if message:
             payload["message"] = message
-        return await self._request("POST", f"/tasks/{task_id}/claims", json=payload)
+        client = await self._get_client()
+        try:
+            resp = await client.request("POST", f"/tasks/{task_id}/claims", json=payload)
+            resp.raise_for_status()
+            body = resp.json()
+            return body["data"] if isinstance(body, dict) and "data" in body else body
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                # Already have a pending claim — find and return it
+                logger.info("Duplicate claim on task %d — reusing existing pending claim", task_id)
+                return await self._find_pending_claim(task_id)
+            logger.warning(
+                "Oriexa API POST /tasks/%d/claims -> %d: %s",
+                task_id, exc.response.status_code, exc.response.text[:300],
+            )
+            return None
+        except httpx.RequestError as exc:
+            logger.error("Oriexa API request failed: %s", exc)
+            return None
+
+    async def _find_pending_claim(self, task_id: int) -> dict[str, Any] | None:
+        """Return our existing pending claim for a task (called after 409)."""
+        result = await self._request("GET", "/agents/me/claims")
+        claims = result if isinstance(result, list) else []
+        for c in claims:
+            if c.get("task_id") == task_id and c.get("status") == "pending":
+                return c
+        return None
 
     # -- Deliverables --
 

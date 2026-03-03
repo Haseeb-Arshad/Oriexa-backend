@@ -550,6 +550,109 @@ async def create_claim(
     return add_rate_limit_headers(resp, agent.rate_limit)
 
 
+# ─── GET /api/v1/tasks/{task_id}/claims — List claims ────────────────────────
+
+@router.get("/{task_id:int}/claims")
+async def list_claims(
+    task_id: int,
+    request: Request,
+    agent: AgentContext = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_db),
+):
+    """List all claims for a task. Poster sees all claims; others see only their own."""
+    if task_id < 1:
+        resp = invalid_parameter_error(
+            "Invalid task ID",
+            "Task IDs are positive integers. Use GET /api/v1/tasks to browse available tasks.",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Validate task exists
+    task_result = await session.execute(
+        select(Task.id, Task.poster_id).where(Task.id == task_id).limit(1)
+    )
+    task = task_result.first()
+    if not task:
+        resp = task_not_found_error(task_id)
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    params = dict(request.query_params)
+    limit = 20
+    try:
+        limit = int(params.get("limit", 20))
+        if limit < 1 or limit > 100:
+            raise ValueError
+    except ValueError:
+        resp = invalid_parameter_error("limit must be between 1 and 100", "Use limit=20 for default page size")
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    cursor_str = params.get("cursor")
+    conditions = [TaskClaim.task_id == task_id]
+
+    # Poster sees all claims; agents see only their own
+    if task.poster_id != agent.operator_id:
+        conditions.append(TaskClaim.agent_id == agent.id)
+
+    if cursor_str:
+        from app.api.pagination import decode_cursor
+        decoded = decode_cursor(cursor_str)
+        if not decoded:
+            resp = invalid_parameter_error(
+                "Invalid cursor value",
+                "Use the cursor value from a previous response's meta.cursor field",
+            )
+            return add_rate_limit_headers(resp, agent.rate_limit)
+        conditions.append(TaskClaim.id < decoded["id"])
+
+    result = await session.execute(
+        select(
+            TaskClaim.id,
+            TaskClaim.task_id,
+            TaskClaim.agent_id,
+            Agent.name.label("agent_name"),
+            TaskClaim.proposed_credits,
+            TaskClaim.message,
+            TaskClaim.status,
+            TaskClaim.created_at,
+        )
+        .select_from(TaskClaim)
+        .join(Agent, TaskClaim.agent_id == Agent.id)
+        .where(and_(*conditions))
+        .order_by(desc(TaskClaim.id))
+        .limit(limit + 1)
+    )
+    rows = result.all()
+
+    has_more = len(rows) > limit
+    page_rows = rows[:limit] if has_more else rows
+
+    data = [
+        {
+            "id": c.id,
+            "task_id": c.task_id,
+            "agent_id": c.agent_id,
+            "agent_name": c.agent_name,
+            "proposed_credits": c.proposed_credits,
+            "message": c.message,
+            "status": c.status,
+            "created_at": _isoformat(c.created_at),
+        }
+        for c in page_rows
+    ]
+
+    next_cursor = None
+    if has_more and page_rows:
+        from app.api.pagination import encode_cursor
+        next_cursor = encode_cursor(page_rows[-1].id)
+
+    resp = success_response(data, 200, {
+        "cursor": next_cursor,
+        "has_more": has_more,
+        "count": len(data),
+    })
+    return add_rate_limit_headers(resp, agent.rate_limit)
+
+
 # ─── POST /api/v1/tasks/{task_id}/claims/accept ──────────────────────────────
 
 @router.post("/{task_id:int}/claims/accept")
@@ -785,6 +888,63 @@ async def bulk_claims(
     return add_rate_limit_headers(resp, agent.rate_limit)
 
 
+# ─── GET /api/v1/tasks/{task_id}/deliverables — List deliverables ────────────
+
+@router.get("/{task_id:int}/deliverables")
+async def list_task_deliverables(
+    task_id: int,
+    agent: AgentContext = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_db),
+):
+    if task_id < 1:
+        resp = invalid_parameter_error(
+            "Invalid task ID",
+            "Task IDs are positive integers. Use GET /api/v1/tasks to browse available tasks.",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Verify task exists
+    task_result = await session.execute(
+        select(Task.id).where(Task.id == task_id).limit(1)
+    )
+    if not task_result.first():
+        resp = task_not_found_error(task_id)
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    result = await session.execute(
+        select(
+            Deliverable.id,
+            Deliverable.task_id,
+            Deliverable.agent_id,
+            Deliverable.content,
+            Deliverable.status,
+            Deliverable.revision_number,
+            Deliverable.revision_notes,
+            Deliverable.submitted_at,
+        )
+        .where(Deliverable.task_id == task_id)
+        .order_by(desc(Deliverable.revision_number))
+    )
+    rows = result.all()
+
+    data = [
+        {
+            "id": r.id,
+            "task_id": r.task_id,
+            "agent_id": r.agent_id,
+            "content": r.content,
+            "status": r.status,
+            "revision_number": r.revision_number,
+            "revision_notes": r.revision_notes,
+            "submitted_at": _isoformat(r.submitted_at),
+        }
+        for r in rows
+    ]
+
+    resp = success_response(data, 200, {"cursor": None, "has_more": False, "count": len(data)})
+    return add_rate_limit_headers(resp, agent.rate_limit)
+
+
 # ─── POST /api/v1/tasks/{task_id}/deliverables — Submit deliverable ──────────
 
 @router.post("/{task_id:int}/deliverables")
@@ -852,11 +1012,11 @@ async def submit_deliverable(
         .limit(1)
     )
     latest_rev = latest.scalar_one_or_none()
-    next_revision = (latest_rev + 1) if latest_rev else 1
+    next_revision = (latest_rev + 1) if latest_rev is not None else 0
 
-    # Check max revisions
-    if next_revision > task.max_revisions + 1:
-        resp = max_revisions_error(task_id, next_revision - 1, task.max_revisions + 1)
+    # Check max revisions (revision 0 = original, 1..max_revisions = revisions)
+    if next_revision > task.max_revisions:
+        resp = max_revisions_error(task_id, next_revision - 1, task.max_revisions)
         return add_rate_limit_headers(resp, agent.rate_limit)
 
     deliverable = Deliverable(
@@ -1830,3 +1990,375 @@ async def agent_send_message(
         "created_at": _isoformat(msg.created_at),
     }, 201)
     return add_rate_limit_headers(resp, agent.rate_limit)
+
+
+# ─── POST /api/v1/tasks/{task_id}/review — Reviewer agent verdict ─────────────
+
+@router.post("/{task_id:int}/review")
+async def post_review(
+    task_id: int,
+    request: Request,
+    agent: AgentContext = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_db),
+):
+    """Submit an automated review verdict (PASS or FAIL) for a task's deliverable.
+
+    Called by the Reviewer Agent after analyzing the submitted deliverable via LLM.
+    - PASS: auto-completes the task and flows credits to the agent operator.
+    - FAIL: marks the deliverable as revision_requested so the agent can resubmit.
+
+    Idempotency: supported via Idempotency-Key header.
+    """
+    if task_id < 1:
+        resp = invalid_parameter_error("Invalid task ID", "Task IDs are positive integers.")
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    try:
+        body = await request.json()
+    except Exception:
+        resp = validation_error(
+            "Invalid JSON body",
+            'Send { "deliverable_id": <int>, "verdict": "pass"|"fail", "feedback": "<text>", "scores": {}, "key_source": "poster"|"freelancer"|"none" }',
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    deliverable_id = body.get("deliverable_id")
+    verdict = body.get("verdict", "").lower()
+    feedback = body.get("feedback", "")
+    scores = body.get("scores", {})
+    model_used = body.get("model_used")
+    key_source = body.get("key_source", "none")
+
+    if not isinstance(deliverable_id, int) or deliverable_id < 1:
+        resp = validation_error(
+            "deliverable_id is required and must be a positive integer",
+            "Include deliverable_id in request body",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    if verdict not in ("pass", "fail"):
+        resp = validation_error(
+            f'Invalid verdict: "{verdict}"',
+            'verdict must be "pass" or "fail"',
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    if key_source not in ("poster", "freelancer", "none"):
+        key_source = "none"
+
+    # Validate task
+    result = await session.execute(
+        select(Task.id, Task.status, Task.poster_id, Task.budget_credits, Task.claimed_by_agent_id,
+               Task.auto_review_enabled, Task.poster_max_reviews, Task.poster_reviews_used)
+        .where(Task.id == task_id)
+        .limit(1)
+    )
+    task = result.first()
+    if not task:
+        resp = task_not_found_error(task_id)
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    if task.status not in ("delivered", "in_progress"):
+        resp = conflict_error(
+            "INVALID_STATUS",
+            f"Task {task_id} is not in a reviewable state (status: {task.status})",
+            "Deliverables can only be reviewed when the task is in 'delivered' or 'in_progress' state",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Validate deliverable
+    del_result = await session.execute(
+        select(Deliverable).where(Deliverable.id == deliverable_id).limit(1)
+    )
+    deliverable = del_result.scalar_one_or_none()
+    if not deliverable or deliverable.task_id != task_id:
+        resp = conflict_error(
+            "DELIVERABLE_NOT_FOUND",
+            f"Deliverable {deliverable_id} not found on task {task_id}",
+            f"Use GET /api/v1/tasks/{task_id} to see deliverables",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Record SubmissionAttempt
+    attempt_count_result = await session.execute(
+        select(func.count()).select_from(SubmissionAttempt)
+        .where(and_(
+            SubmissionAttempt.task_id == task_id,
+            SubmissionAttempt.agent_id == deliverable.agent_id,
+        ))
+    )
+    attempt_number = (attempt_count_result.scalar() or 0) + 1
+
+    attempt = SubmissionAttempt(
+        task_id=task_id,
+        agent_id=deliverable.agent_id,
+        deliverable_id=deliverable_id,
+        attempt_number=attempt_number,
+        content=deliverable.content,
+        review_result=verdict,
+        review_feedback=feedback,
+        review_scores=scores,
+        review_key_source=key_source,
+        llm_model_used=model_used,
+    )
+    session.add(attempt)
+    await session.flush()
+
+    credits_paid = 0
+    platform_fee = 0
+    task_status = task.status
+
+    if verdict == "pass":
+        # PASS: auto-complete task and flow credits
+        updated = await session.execute(
+            update(Task)
+            .where(and_(Task.id == task_id, Task.status.in_(["delivered", "in_progress"])))
+            .values(status="completed", updated_at=datetime.now(timezone.utc))
+            .returning(Task.id)
+        )
+        if updated.first():
+            task_status = "completed"
+            await session.execute(
+                update(Deliverable)
+                .where(Deliverable.id == deliverable_id)
+                .values(status="accepted")
+            )
+
+            # Process credits
+            if task.claimed_by_agent_id:
+                agent_data = await session.execute(
+                    select(Agent.operator_id).where(Agent.id == task.claimed_by_agent_id).limit(1)
+                )
+                agent_row = agent_data.first()
+                if agent_row:
+                    credit_result = await process_task_completion(
+                        session, agent_row.operator_id, task.budget_credits, task_id
+                    )
+                    credits_paid = credit_result["payment"] if credit_result else 0
+                    platform_fee = credit_result["fee"] if credit_result else 0
+                    await session.execute(
+                        update(Agent)
+                        .where(Agent.id == task.claimed_by_agent_id)
+                        .values(
+                            tasks_completed=Agent.tasks_completed + 1,
+                            updated_at=datetime.now(timezone.utc),
+                        )
+                    )
+
+            # Dispatch webhook
+            if task.claimed_by_agent_id:
+                dispatch_webhook_event(task.claimed_by_agent_id, "deliverable.accepted", {
+                    "task_id": task_id,
+                    "deliverable_id": deliverable_id,
+                    "credits_paid": credits_paid,
+                    "platform_fee": platform_fee,
+                    "auto_reviewed": True,
+                })
+
+    else:
+        # FAIL: request revision
+        task_status = "in_progress"
+        await session.execute(
+            update(Deliverable)
+            .where(Deliverable.id == deliverable_id)
+            .values(status="revision_requested", revision_notes=feedback)
+        )
+        await session.execute(
+            update(Task)
+            .where(Task.id == task_id)
+            .values(status="in_progress", updated_at=datetime.now(timezone.utc))
+        )
+
+        if task.claimed_by_agent_id:
+            dispatch_webhook_event(task.claimed_by_agent_id, "deliverable.revision_requested", {
+                "task_id": task_id,
+                "deliverable_id": deliverable_id,
+                "feedback": feedback,
+                "auto_reviewed": True,
+            })
+
+    # Increment poster_reviews_used if reviewer used poster's key
+    if key_source == "poster":
+        await session.execute(
+            update(Task)
+            .where(Task.id == task_id)
+            .values(poster_reviews_used=Task.poster_reviews_used + 1)
+        )
+
+    # Update attempt reviewed_at
+    from datetime import timezone as tz
+    await session.execute(
+        update(SubmissionAttempt)
+        .where(SubmissionAttempt.id == attempt.id)
+        .values(reviewed_at=datetime.now(timezone.utc))
+    )
+    await session.commit()
+
+    resp = success_response({
+        "task_id": task_id,
+        "deliverable_id": deliverable_id,
+        "verdict": verdict,
+        "task_status": task_status,
+        "credits_paid": credits_paid,
+        "platform_fee": platform_fee,
+        "attempt_number": attempt_number,
+        "message": (
+            f"Task {task_id} completed. {credits_paid} credits paid to agent operator."
+            if verdict == "pass"
+            else f"Deliverable {deliverable_id} requires revision. Feedback provided."
+        ),
+    })
+    return add_rate_limit_headers(resp, agent.rate_limit)
+
+
+# ─── GET /api/v1/tasks/search — Full-text search ─────────────────────────────
+
+@router.get("/search")
+async def search_tasks(
+    request: Request,
+    agent: AgentContext = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_db),
+):
+    """Full-text search on task title and description.
+
+    Results are ranked by relevance (title matches first, then description).
+    Supports cursor-based pagination.
+    """
+    params = dict(request.query_params)
+    q = params.get("q", "").strip()
+
+    if not q:
+        resp = invalid_parameter_error(
+            "Search query is required",
+            "Provide a ?q=<search_term> parameter. Example: GET /api/v1/tasks/search?q=REST+API",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    if len(q) > 200:
+        resp = invalid_parameter_error(
+            "Search query too long (max 200 characters)",
+            "Shorten your search query",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    # Parse optional filters
+    status_filter = params.get("status", "open")
+    valid_statuses = ["open", "claimed", "in_progress", "delivered", "completed", "cancelled", "disputed"]
+    if status_filter not in valid_statuses:
+        resp = invalid_parameter_error(
+            f"Invalid status: {status_filter!r}",
+            f"Valid values: {', '.join(valid_statuses)}",
+        )
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    limit = 20
+    try:
+        limit = int(params.get("limit", 20))
+        if limit < 1 or limit > 100:
+            raise ValueError
+    except ValueError:
+        resp = invalid_parameter_error("limit must be between 1 and 100", "Use limit=20")
+        return add_rate_limit_headers(resp, agent.rate_limit)
+
+    cursor_str = params.get("cursor")
+
+    # Build search pattern
+    pattern = f"%{q}%"
+    conditions = [Task.status == status_filter]
+
+    # Title match prioritized over description
+    from sqlalchemy import case, or_
+    conditions.append(or_(
+        Task.title.ilike(pattern),
+        Task.description.ilike(pattern),
+    ))
+
+    if cursor_str:
+        decoded = decode_cursor(cursor_str)
+        if not decoded:
+            resp = invalid_parameter_error(
+                "Invalid cursor value",
+                "Use the cursor value from a previous response's meta.cursor field",
+            )
+            return add_rate_limit_headers(resp, agent.rate_limit)
+        conditions.append(Task.id < decoded["id"])
+
+    # Relevance ordering: title match = 2, description match = 1
+    relevance = case(
+        (Task.title.ilike(pattern), 2),
+        else_=1,
+    )
+
+    query = (
+        select(
+            Task.id,
+            Task.title,
+            Task.description,
+            Task.budget_credits,
+            Task.category_id,
+            Category.name.label("category_name"),
+            Category.slug.label("category_slug"),
+            Task.status,
+            User.id.label("poster_id"),
+            User.name.label("poster_name"),
+            Task.deadline,
+            Task.max_revisions,
+            Task.created_at,
+        )
+        .select_from(Task)
+        .outerjoin(Category, Task.category_id == Category.id)
+        .join(User, Task.poster_id == User.id)
+        .where(and_(*conditions))
+        .order_by(relevance.desc(), desc(Task.id))
+        .limit(limit + 1)
+    )
+
+    result = await session.execute(query)
+    rows = result.all()
+
+    has_more = len(rows) > limit
+    page_rows = rows[:limit] if has_more else rows
+
+    # Get claims counts
+    task_ids = [r.id for r in page_rows]
+    claims_counts: dict[int, int] = {}
+    if task_ids:
+        counts_q = (
+            select(TaskClaim.task_id, func.count().label("cnt"))
+            .where(TaskClaim.task_id.in_(task_ids))
+            .group_by(TaskClaim.task_id)
+        )
+        counts_result = await session.execute(counts_q)
+        claims_counts = {r.task_id: r.cnt for r in counts_result.all()}
+
+    data = [
+        {
+            "id": row.id,
+            "title": row.title,
+            "description": row.description,
+            "budget_credits": row.budget_credits,
+            "category": (
+                {"id": row.category_id, "name": row.category_name, "slug": row.category_slug}
+                if row.category_id else None
+            ),
+            "status": row.status,
+            "poster": {"id": row.poster_id, "name": row.poster_name},
+            "claims_count": claims_counts.get(row.id, 0),
+            "deadline": _isoformat(row.deadline),
+            "max_revisions": row.max_revisions,
+            "created_at": _isoformat(row.created_at),
+        }
+        for row in page_rows
+    ]
+
+    next_cursor = None
+    if has_more and page_rows:
+        next_cursor = encode_cursor(page_rows[-1].id)
+
+    resp = success_response(
+        data,
+        200,
+        {"cursor": next_cursor, "has_more": has_more, "count": len(data), "query": q},
+    )
+    return add_rate_limit_headers(resp, agent.rate_limit)
+

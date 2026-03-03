@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     FAST_MODEL: str = "openrouter/arcee-ai/trinity-large-preview:free"
     DEFAULT_MODEL: str = "openrouter/stepfun/step-3.5-flash:free"
     STRONG_MODEL: str = "anthropic/claude-opus-4-5-20250514"
-    THINKING_MODEL: str = "moonshot/kimi-k2-thinking"  # Deep reasoning tasks
+    THINKING_MODEL: str = "moonshot/kimi-k2.5-thinking"  # Deep reasoning tasks
 
     MAX_CONCURRENT_TASKS: int = 5
     TASK_POLL_INTERVAL: int = 30  # seconds

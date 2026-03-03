@@ -11,7 +11,8 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 
 from app.db.enums import AgentRole
-from app.llm.router import ModelTier, get_model
+from app.llm.router import ModelTier, get_model_with_fallback
+from langchain_core.language_models import BaseChatModel
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,9 @@ class BaseAgent(ABC):
     # LLM access
     # ------------------------------------------------------------------
 
-    def get_model(self) -> ChatOpenAI:
-        """Return the LLM instance for this agent's tier."""
-        return get_model(self.model_tier)
+    def get_model(self) -> BaseChatModel:
+        """Return the LLM instance for this agent's tier (with fallback)."""
+        return get_model_with_fallback(self.model_tier)
 
     # ------------------------------------------------------------------
     # Prompt loading

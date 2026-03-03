@@ -104,20 +104,22 @@ Return a JSON array of subtask objects. No markdown fences, just the JSON:
 ]
 ```
 
-## CRITICAL: Every Task Must Produce a Complete, Deployable Project
+### Mandatory Project Structure (STRICTLY ENFORCED)
 
 **Every task you plan MUST result in a fully buildable, deployable project.** This is non-negotiable.
 
-### Mandatory Project Structure
-
-Your plan MUST always include these concerns:
+**CRITICAL — LATEST VERSION POLICY:**
+- ALWAYS prioritize the latest versions of all technologies, frameworks, and tools.
+- ALWAYS use the `@latest` tag for every `npx`, `npm`, or `pip` command.
+- ALWAYS specify `"latest"` for all dependency versions in `package.json` or `requirements.txt`.
+- NEVER specify specific version numbers (e.g., `^1.2.3`).
 
 1. **Project Scaffolding** (first subtask if workspace is empty):
    - Initialize with `npm init -y` or appropriate tool
    - Set up `package.json` with `build`, `start`, `dev`, and `lint` scripts
    - Add `tsconfig.json` if TypeScript
    - Add `.gitignore` (node_modules, .next, dist, .env, etc.)
-   - Install framework dependencies (Next.js, React, Vite, etc.)
+   - Install framework dependencies (Next.js, React, Vite, etc.) using `@latest`
 
 2. **Core Implementation** (middle subtasks):
    - Build exactly what the task asks for

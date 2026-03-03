@@ -64,7 +64,11 @@ def _is_coding_task(task_data: dict[str, Any]) -> bool:
     """
     title = (task_data.get("title") or "").lower()
     description = (task_data.get("description") or "").lower()
-    category = (task_data.get("category") or "").lower()
+    # category may be a dict {"id":1,"name":"Coding",...} or a plain string
+    cat_raw = task_data.get("category") or ""
+    if isinstance(cat_raw, dict):
+        cat_raw = cat_raw.get("name") or cat_raw.get("slug") or ""
+    category = str(cat_raw).lower()
     text = f"{title} {description} {category}"
 
     # Check for explicit non-coding indicators

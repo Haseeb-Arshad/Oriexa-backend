@@ -9,7 +9,7 @@ Examples:
   - openrouter/arcee-ai/trinity-large-preview:free
   - openrouter/stepfun/step-3.5-flash:free
   - anthropic/claude-opus-4-5-20250514
-  - moonshot/kimi-k2-thinking
+  - moonshot/kimi-k2.5-thinking
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import enum
 import logging
 
 from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 
 from app.config import settings
 
@@ -164,3 +165,41 @@ def get_model_by_id(
         logger.info("Created model by ID: provider=%s model=%s", provider, model_id)
 
     return _model_cache[cache_key]
+def get_model_with_fallback(
+    tier: ModelTier | str,
+    temperature: float = 0.1,
+    max_tokens: int = 4096,
+) -> BaseChatModel:
+    """Return a model with automatic fallback to other tiers.
+    
+    Order: 
+      - If THINKING fails → try STRONG
+      - If STRONG fails → try DEFAULT
+      - If DEFAULT fails → try FAST
+    """
+    if isinstance(tier, str):
+        tier = ModelTier(tier)
+
+    primary = get_model(tier, temperature, max_tokens)
+    
+    # Define fallback sequence based on tier
+    fallbacks = []
+    if tier == ModelTier.THINKING:
+        fallbacks = [
+            get_model(ModelTier.STRONG, temperature, max_tokens),
+            get_model(ModelTier.DEFAULT, temperature, max_tokens),
+        ]
+    elif tier == ModelTier.STRONG:
+        fallbacks = [
+            get_model(ModelTier.DEFAULT, temperature, max_tokens),
+            get_model(ModelTier.FAST, 0, 1024),
+        ]
+    elif tier == ModelTier.DEFAULT:
+        fallbacks = [
+            get_model(ModelTier.FAST, 0, 1024),
+        ]
+
+    if not fallbacks:
+        return primary
+        
+    return primary.with_fallbacks(fallbacks)
