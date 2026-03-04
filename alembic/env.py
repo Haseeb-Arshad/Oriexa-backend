@@ -42,6 +42,8 @@ async def run_async_migrations() -> None:
     )
     if needs_ssl and "ssl" not in db_url:
         connect_args["ssl"] = "require"
+    if ":6543/" in db_url or "pooler.supabase.com" in db_url:
+        connect_args["statement_cache_size"] = 0
 
     connectable = create_async_engine(db_url, connect_args=connect_args)
     async with connectable.connect() as connection:

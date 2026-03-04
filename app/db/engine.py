@@ -16,6 +16,11 @@ _needs_ssl = any(
 if _needs_ssl and "ssl" not in _db_url:
     _connect_args["ssl"] = "require"
 
+# Supabase Supavisor transaction pooler (port 6543) doesn't support
+# prepared statements — disable the asyncpg statement cache when using it.
+if ":6543/" in _db_url or "pooler.supabase.com" in _db_url:
+    _connect_args["statement_cache_size"] = 0
+
 engine = create_async_engine(
     _db_url,
     echo=False,
