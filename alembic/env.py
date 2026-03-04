@@ -5,6 +5,7 @@ from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import settings
+from app.db.engine import _build_engine_params
 from app.db.models import Base
 
 config = context.config
@@ -16,7 +17,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+    url, _ = _build_engine_params(settings.DATABASE_URL)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -34,17 +35,7 @@ def do_run_migrations(connection):
 
 
 async def run_async_migrations() -> None:
-    db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
-    connect_args: dict = {}
-    needs_ssl = any(
-        kw in db_url
-        for kw in ("supabase.co", "supabase.com", "neon.tech", "render.com", "railway.app")
-    )
-    if needs_ssl and "ssl" not in db_url:
-        connect_args["ssl"] = "require"
-    if ":6543/" in db_url or "pooler.supabase.com" in db_url:
-        connect_args["statement_cache_size"] = 0
-
+    db_url, connect_args = _build_engine_params(settings.DATABASE_URL)
     connectable = create_async_engine(db_url, connect_args=connect_args)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
