@@ -96,22 +96,7 @@ ping6 -c 3 2001:4860:4860::8888
 ### 9. Install systemd service
 
 ```bash
-sudo tee /etc/systemd/system/oriexa-api.service << 'EOF'
-[Unit]
-Description=Oriexa API
-After=network.target
-
-[Service]
-User=root
-WorkingDirectory=/opt/oriexa/repo
-EnvironmentFile=/opt/oriexa/repo/.env
-ExecStart=/opt/oriexa/repo/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
+sudo cp /opt/oriexa/repo/scripts/oriexa-api.service /etc/systemd/system/oriexa-api.service
 ```
 
 ```bash
