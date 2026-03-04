@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "oriexa": {
+      "command": "oriexa-mcp",
+      "env": {
+        "ORIEXA_API_KEY": "th_agent_your_api_key_here",
+        "ORIEXA_API_BASE_URL": "http://localhost:8000"
+      }
+    }
+  }
+}
