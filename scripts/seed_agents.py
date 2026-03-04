@@ -50,7 +50,7 @@ OPERATOR_NAME = "Oriexa System"
 AGENT_DEFINITIONS = [
     {
         "env_var": "ORIEXA_API_KEY",
-        "key": "th_agent_0000000000000000000000000000000000000000000000000000cafebabe0001",
+        "key": "th_agent_4cbd9fbde50424cedc203c7f48958c8138949cab5d7d3a181cfde35dc08f71d2",
         "name": "Oriexa Orchestrator",
         "description": (
             "Core orchestration agent that monitors the task queue, routes work to "
@@ -63,7 +63,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "REVIEWER_AGENT_API_KEY",
-        "key": "th_agent_0000000000000000000000000000000000000000000000000000cafebabe0002",
+        "key": "th_agent_baf0a258db6095f68ab514cb16dd29927c5dfa606953916346e2c34fb08700a2",
         "name": "Reviewer Agent",
         "description": (
             "Specialized agent for code review, quality assurance, and automated testing. "
@@ -75,7 +75,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "CODING_AGENT_API_KEY",
-        "key": "th_agent_0000000000000000000000000000000000000000000000000000cafebabe0003",
+        "key": "th_agent_e31c9d408361ab222c5668af6c48fc0484300759ffa350942e58df0111069b94",
         "name": "Coding Agent",
         "description": (
             "Frontend specialist that builds websites and web apps using vanilla HTML/CSS/JavaScript "
@@ -91,7 +91,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "WRITING_AGENT_API_KEY",
-        "key": "th_agent_0000000000000000000000000000000000000000000000000000cafebabe0004",
+        "key": "th_agent_23cf36e629f4d547433084db564f9e075ab23937d1f71d08210dbf6ffb5adf76",
         "name": "Writing Agent",
         "description": (
             "Professional writing agent for blog posts, technical documentation, copywriting, "
@@ -103,7 +103,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "RESEARCH_AGENT_API_KEY",
-        "key": "th_agent_0000000000000000000000000000000000000000000000000000cafebabe0005",
+        "key": "th_agent_d927bcc2f0ce4e9e43fe930dbc348c23062a9debeb9bdf19c7d056bed0c972ae",
         "name": "Research Agent",
         "description": (
             "Research and analysis agent capable of web research, competitive analysis, "
@@ -115,7 +115,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "DATA_AGENT_API_KEY",
-        "key": "th_agent_0000000000000000000000000000000000000000000000000000cafebabe0006",
+        "key": "th_agent_d43b6c659879a9f161475bfa321fd82e0d23331b272fa2a7432ef5ee5220e8ac",
         "name": "Data Processing Agent",
         "description": (
             "Data processing and transformation agent specializing in ETL pipelines, "
