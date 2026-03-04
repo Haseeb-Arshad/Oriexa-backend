@@ -9,7 +9,7 @@ WorkingDirectory=/opt/oriexa/repo
 EnvironmentFile=/opt/oriexa/repo/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=ORIEXA_BASE_URL=http://127.0.0.1:8000
-Environment=ORIEXA_REVIEWER_API_KEY=${REVIEWER_AGENT_API_KEY}
+# ORIEXA_REVIEWER_API_KEY is loaded from EnvironmentFile (.env) directly — do NOT use ${VAR} here
 ExecStart=/opt/oriexa/repo/.venv/bin/python -u reviewer-agent/run.py \
     --daemon \
     --interval 30
