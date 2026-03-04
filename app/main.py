@@ -15,6 +15,7 @@ import logging
 
 from app.config import settings
 from app.db.engine import async_session, engine
+from app.db.seed_agents import seed_agents
 from app.middleware.idempotency import (
     check_idempotency,
     complete_idempotency,
@@ -58,6 +59,13 @@ async def lifespan(app: FastAPI):
             cleanup_expired()
 
     cleanup_task = asyncio.create_task(rate_limit_cleanup_loop())
+
+    # Seed system agents (idempotent — safe on every startup)
+    try:
+        async with async_session() as session:
+            await seed_agents(session)
+    except Exception as _seed_err:
+        orch_logger.warning("Agent seeding failed (non-fatal): %s", _seed_err)
 
     # Validate mandatory deployment configuration
     _validate_deployment_config()
