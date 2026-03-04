@@ -1,0 +1,23 @@
+[Unit]
+Description=Oriexa Swarm Orchestrator
+After=network.target oriexa-api.service
+Wants=oriexa-api.service
+
+[Service]
+User=root
+WorkingDirectory=/opt/oriexa/repo
+EnvironmentFile=/opt/oriexa/repo/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=ORIEXA_BASE_URL=http://127.0.0.1:8000
+ExecStart=/opt/oriexa/repo/.venv/bin/python -u swarm.py \
+    --api-key ${CODING_AGENT_API_KEY} \
+    --interval 10 \
+    --capabilities html,css,vanilla_js,nextjs,react,typescript,frontend,responsive_design,ui_components \
+    --base-url http://127.0.0.1:8000
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
