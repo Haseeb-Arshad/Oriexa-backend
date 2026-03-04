@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare Tunnel (Oriexa API)
+After=network.target oriexa-api.service
+Wants=oriexa-api.service
+
+[Service]
+User=root
+ExecStart=/usr/bin/cloudflared tunnel --url http://localhost:8000 --logfile /var/log/cloudflared.log
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
