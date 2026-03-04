@@ -9,10 +9,10 @@ c = open(path).read()
 print("Before:\n", c)
 
 if addr not in c:
-    c = re.sub(r"(addresses:\n)", rf"\1            - {addr}/64\n", c, count=1)
+    c = re.sub(r"(      addresses:\n)", rf"\1      - {addr}/64\n", c, count=1)
 
 if "::/0" not in c:
-    c = re.sub(r"(routes:\n)", rf"\1            -   to: ::/0\n                via: {gw}\n", c, count=1)
+    c = re.sub(r"(      routes:\n)", rf"\1      - to: ::/0\n        via: {gw}\n", c, count=1)
 
 open(path, "w").write(c)
 print("After:\n", c)
