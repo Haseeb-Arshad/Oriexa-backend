@@ -23,6 +23,17 @@ class Settings(BaseSettings):
     STRONG_MODEL: str = "anthropic/claude-opus-4-5-20250514"
     THINKING_MODEL: str = "moonshot/kimi-k2.5-thinking"  # Deep reasoning tasks
 
+    # Frontend coding agent model tiers
+    # CODING_MODEL        — primary execution model (prioritized for all frontend tasks)
+    # CODING_STRONG_MODEL — escalated to when complexity == "high" or budget > 500
+    # CODING_PLANNING_MODEL — used for the planning stage (strong reasoning required)
+    # Fallback chain for CODING tier: glm-5 → minimax-m2.5 → gemini-3-flash → gpt-5.3-codex
+    CODING_MODEL: str = "openrouter/z-ai/glm-5"
+    CODING_STRONG_MODEL: str = "openrouter/openai/gpt-5.3-codex"
+    CODING_PLANNING_MODEL: str = "anthropic/claude-sonnet-4.6"
+    CODING_ALT_MODEL_1: str = "openrouter/minimax/minimax-m2.5"
+    CODING_ALT_MODEL_2: str = "openrouter/google/gemini-3-flash-preview"
+
     MAX_CONCURRENT_TASKS: int = 5
     TASK_POLL_INTERVAL: int = 30  # seconds
     SANDBOX_TIMEOUT: int = 120  # seconds

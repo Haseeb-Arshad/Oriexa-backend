@@ -36,6 +36,10 @@ class ModelTier(str, enum.Enum):
     DEFAULT = "default"
     STRONG = "strong"
     THINKING = "thinking"
+    # Frontend coding pipeline tiers
+    CODING = "coding"              # primary execution: z-ai/glm-5
+    CODING_STRONG = "coding_strong"    # complex tasks:   openai/gpt-5.3-codex
+    CODING_PLANNING = "coding_planning"  # planning stage:  anthropic/claude-sonnet-4.6
 
 
 def _get_model_config(tier: ModelTier) -> str:
@@ -45,6 +49,9 @@ def _get_model_config(tier: ModelTier) -> str:
         ModelTier.DEFAULT: settings.DEFAULT_MODEL,
         ModelTier.STRONG: settings.STRONG_MODEL,
         ModelTier.THINKING: settings.THINKING_MODEL,
+        ModelTier.CODING: settings.CODING_MODEL,
+        ModelTier.CODING_STRONG: settings.CODING_STRONG_MODEL,
+        ModelTier.CODING_PLANNING: settings.CODING_PLANNING_MODEL,
     }
     return mapping[tier]
 
@@ -165,25 +172,32 @@ def get_model_by_id(
         logger.info("Created model by ID: provider=%s model=%s", provider, model_id)
 
     return _model_cache[cache_key]
+
+
 def get_model_with_fallback(
     tier: ModelTier | str,
     temperature: float = 0.1,
     max_tokens: int = 4096,
 ) -> BaseChatModel:
     """Return a model with automatic fallback to other tiers.
-    
-    Order: 
-      - If THINKING fails → try STRONG
-      - If STRONG fails → try DEFAULT
-      - If DEFAULT fails → try FAST
+
+    General tiers:
+      THINKING  → STRONG → DEFAULT
+      STRONG    → DEFAULT → FAST
+      DEFAULT   → FAST
+
+    Frontend coding tiers:
+      CODING          → minimax-m2.5 → gemini-3-flash → CODING_STRONG → DEFAULT
+      CODING_STRONG   → STRONG
+      CODING_PLANNING → STRONG → DEFAULT
     """
     if isinstance(tier, str):
         tier = ModelTier(tier)
 
     primary = get_model(tier, temperature, max_tokens)
-    
+
     # Define fallback sequence based on tier
-    fallbacks = []
+    fallbacks: list[BaseChatModel] = []
     if tier == ModelTier.THINKING:
         fallbacks = [
             get_model(ModelTier.STRONG, temperature, max_tokens),
@@ -198,8 +212,27 @@ def get_model_with_fallback(
         fallbacks = [
             get_model(ModelTier.FAST, 0, 1024),
         ]
+    elif tier == ModelTier.CODING:
+        # Prioritize glm-5; fall through alt models then escalate to gpt-5.3-codex
+        fallbacks = [
+            get_model_by_id(settings.CODING_ALT_MODEL_1, temperature, max_tokens),
+            get_model_by_id(settings.CODING_ALT_MODEL_2, temperature, max_tokens),
+            get_model(ModelTier.CODING_STRONG, temperature, max_tokens),
+            get_model(ModelTier.DEFAULT, temperature, max_tokens),
+        ]
+    elif tier == ModelTier.CODING_STRONG:
+        # gpt-5.3-codex → fall back to general STRONG
+        fallbacks = [
+            get_model(ModelTier.STRONG, temperature, max_tokens),
+        ]
+    elif tier == ModelTier.CODING_PLANNING:
+        # claude-sonnet-4.6 → fall back to STRONG → DEFAULT
+        fallbacks = [
+            get_model(ModelTier.STRONG, temperature, max_tokens),
+            get_model(ModelTier.DEFAULT, temperature, max_tokens),
+        ]
 
     if not fallbacks:
         return primary
-        
+
     return primary.with_fallbacks(fallbacks)

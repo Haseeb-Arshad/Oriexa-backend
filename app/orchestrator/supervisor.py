@@ -287,6 +287,7 @@ async def wait_for_response_node(state: TaskState) -> dict[str, Any]:
 async def planning_node(state: TaskState) -> dict[str, Any]:
     """Run the PlanningAgent to decompose the task into subtasks."""
     from app.agents.planning import PlanningAgent
+    from app.llm.router import ModelTier
 
     eid = _eid(state)
     attempt = state.get("attempt_count", 0)
@@ -311,7 +312,14 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
             f"Poster clarified: {clarification_response}\n\n{original_desc}"
         )
 
-    agent = PlanningAgent()
+    # Frontend tasks use claude-sonnet-4.6 for deep planning reasoning
+    task_type = state.get("task_type", "general")
+    planning_tier = (
+        ModelTier.CODING_PLANNING.value
+        if task_type == "frontend"
+        else ModelTier.DEFAULT.value
+    )
+    agent = PlanningAgent(model_tier=planning_tier)
     result = await agent.run(planning_state)
 
     plan = result.get("plan", [])
@@ -344,6 +352,7 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
 async def execution_node(state: TaskState) -> dict[str, Any]:
     """Run the ExecutionAgent to execute all subtasks."""
     from app.agents.execution import ExecutionAgent
+    from app.llm.router import ModelTier
 
     eid = _eid(state)
     plan = state.get("plan", [])
@@ -353,7 +362,14 @@ async def execution_node(state: TaskState) -> dict[str, Any]:
     progress_tracker.add_step(eid, "execution", "writing",
         detail="Fingers on keyboard — creating files, writing implementations, wiring things together")
 
-    agent = ExecutionAgent()
+    # Frontend tasks use z-ai/glm-5 as the primary execution model
+    task_type = state.get("task_type", "general")
+    exec_tier = (
+        ModelTier.CODING.value
+        if task_type == "frontend"
+        else ModelTier.DEFAULT.value
+    )
+    agent = ExecutionAgent(model_tier=exec_tier)
     result = await agent.run(state)
 
     files_created = result.get("files_created", [])
@@ -400,6 +416,7 @@ async def execution_node(state: TaskState) -> dict[str, Any]:
 async def complex_execution_node(state: TaskState) -> dict[str, Any]:
     """Run the ComplexTaskAgent for high-complexity or high-budget tasks."""
     from app.agents.complex_task import ComplexTaskAgent
+    from app.llm.router import ModelTier
 
     eid = _eid(state)
     plan = state.get("plan", [])
@@ -412,7 +429,14 @@ async def complex_execution_node(state: TaskState) -> dict[str, Any]:
     progress_tracker.add_step(eid, "complex_execution", "writing",
         detail="Building the implementation with careful attention to every detail")
 
-    agent = ComplexTaskAgent()
+    # Frontend complex tasks escalate to gpt-5.3-codex (CODING_STRONG)
+    task_type = state.get("task_type", "general")
+    complex_tier = (
+        ModelTier.CODING_STRONG.value
+        if task_type == "frontend"
+        else ModelTier.STRONG.value
+    )
+    agent = ComplexTaskAgent(model_tier=complex_tier)
     result = await agent.run(state)
 
     files_created = result.get("files_created", [])

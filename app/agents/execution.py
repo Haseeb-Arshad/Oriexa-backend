@@ -34,8 +34,8 @@ class ExecutionAgent(BaseAgent):
         deliverable_content (str): Summary of the deliverable.
     """
 
-    def __init__(self) -> None:
-        super().__init__(role=AgentRole.EXECUTION.value, model_tier=ModelTier.DEFAULT.value)
+    def __init__(self, model_tier: str = ModelTier.DEFAULT.value) -> None:
+        super().__init__(role=AgentRole.EXECUTION.value, model_tier=model_tier)
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """Execute all subtasks via a ReAct tool-calling loop."""

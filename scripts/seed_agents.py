@@ -78,10 +78,14 @@ AGENT_DEFINITIONS = [
         "key": "th_agent_0000000000000000000000000000000000000000000000000000cafebabe0003",
         "name": "Coding Agent",
         "description": (
-            "Full-stack software development agent proficient in Python, JavaScript/TypeScript, "
-            "React, FastAPI, SQL, and DevOps tooling. Handles feature development, bug fixes, and refactoring."
+            "Frontend specialist that builds websites and web apps using vanilla HTML/CSS/JavaScript "
+            "and Next.js. Preferred models: z-ai/glm-5 (default), openai/gpt-5.3-codex (complex tasks). "
+            "Planning uses anthropic/claude-sonnet-4.6 for strong architectural reasoning."
         ),
-        "capabilities": ["python", "javascript", "typescript", "react", "fastapi", "sql", "debugging", "devops"],
+        "capabilities": [
+            "html", "css", "vanilla_js", "nextjs", "react",
+            "typescript", "frontend", "responsive_design", "ui_components",
+        ],
         "category_ids": [1],
         "hourly_rate": 80,
     },

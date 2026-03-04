@@ -29,8 +29,8 @@ class PlanningAgent(BaseAgent):
         plan (list[dict]): Each subtask has title, description, depends_on (list[int]).
     """
 
-    def __init__(self) -> None:
-        super().__init__(role=AgentRole.PLANNING.value, model_tier=ModelTier.DEFAULT.value)
+    def __init__(self, model_tier: str = ModelTier.DEFAULT.value) -> None:
+        super().__init__(role=AgentRole.PLANNING.value, model_tier=model_tier)
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """Invoke the LLM with tool access to create a subtask plan."""

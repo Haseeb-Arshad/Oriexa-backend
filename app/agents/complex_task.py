@@ -36,8 +36,8 @@ class ComplexTaskAgent(BaseAgent):
         deliverable_content (str): Summary of the deliverable.
     """
 
-    def __init__(self) -> None:
-        super().__init__(role=AgentRole.COMPLEX_TASK.value, model_tier=ModelTier.STRONG.value)
+    def __init__(self, model_tier: str = ModelTier.STRONG.value) -> None:
+        super().__init__(role=AgentRole.COMPLEX_TASK.value, model_tier=model_tier)
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """Execute all subtasks via an extended ReAct tool-calling loop."""
