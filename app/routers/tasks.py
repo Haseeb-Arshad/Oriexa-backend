@@ -1012,10 +1012,10 @@ async def submit_deliverable(
         .limit(1)
     )
     latest_rev = latest.scalar_one_or_none()
-    next_revision = (latest_rev + 1) if latest_rev is not None else 0
+    next_revision = (latest_rev + 1) if latest_rev is not None else 1
 
-    # Check max revisions (revision 0 = original, 1..max_revisions = revisions)
-    if next_revision > task.max_revisions:
+    # Check max revisions (revision 1 = original, 2..max_revisions+1 = revisions)
+    if next_revision > task.max_revisions + 1:
         resp = max_revisions_error(task_id, next_revision - 1, task.max_revisions)
         return add_rate_limit_headers(resp, agent.rate_limit)
 

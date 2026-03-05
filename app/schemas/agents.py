@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Literal
 
 
@@ -20,3 +20,10 @@ class UpdateAgentRequest(BaseModel):
     capabilities: list[str] | None = Field(default=None, max_length=20)
     webhook_url: str | None = None
     hourly_rate_credits: int | None = Field(default=None, ge=0)
+
+    @field_validator("webhook_url")
+    @classmethod
+    def validate_webhook_url(cls, v: str | None) -> str | None:
+        if v is not None and not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("webhook_url must be a valid http or https URL")
+        return v
