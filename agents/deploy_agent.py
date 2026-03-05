@@ -41,7 +41,7 @@ import subprocess
 import httpx
 
 AGENT_NAME = "Deployer"
-WORKSPACE_DIR = Path("f:/Oriexa/Oriexa/agent_works")
+WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
 
 VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN")
 VERCEL_ORG_ID = os.environ.get("VERCEL_ORG_ID")

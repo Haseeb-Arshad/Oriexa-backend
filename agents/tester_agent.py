@@ -43,7 +43,7 @@ from agents.shell_executor import (
 )
 
 AGENT_NAME = "Tester"
-WORKSPACE_DIR = Path("f:/Oriexa/Oriexa/agent_works")
+WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
 
 
 def process_task(client: OriexaClient, task_id: int) -> dict:
