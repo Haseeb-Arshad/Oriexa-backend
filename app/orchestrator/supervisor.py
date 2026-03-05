@@ -564,70 +564,64 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
     progress_tracker.add_step(eid, "deployment", "github",
         detail="Creating GitHub repository and pushing code")
 
-    if not settings.GITHUB_TOKEN:
-        logger.warning("GITHUB_TOKEN is not configured — GitHub deployment will be skipped")
-        progress_tracker.add_step(eid, "deployment", "github",
-            detail="GITHUB_TOKEN not configured — set it in .env to enable GitHub deployment")
-    else:
-        task_title = task_data.get("title", "delivery")
-        # Slugify the title
-        title_slug = task_title.lower()[:40]
-        title_slug = title_slug.replace(" ", "-")
-        title_slug = "".join(c for c in title_slug if c.isalnum() or c == "-")
-        title_slug = title_slug.strip("-")
+    task_title = task_data.get("title", "delivery")
+    # Slugify the title
+    title_slug = task_title.lower()[:40]
+    title_slug = title_slug.replace(" ", "-")
+    title_slug = "".join(c for c in title_slug if c.isalnum() or c == "-")
+    title_slug = title_slug.strip("-")
 
-        repo_name = f"{settings.GITHUB_REPO_PREFIX}-{execution_id}-{title_slug}"
-        description = f"Oriexa delivery for: {task_title}"
+    repo_name = f"{settings.GITHUB_REPO_PREFIX}-{execution_id}-{title_slug}"
+    description = f"Oriexa delivery for: {task_title}"
 
-        try:
-            gh_result = await create_github_repo(
-                repo_name=repo_name,
-                description=description,
-                workspace_path=workspace_path,
-            )
-            if gh_result.get("success"):
-                result["github_repo_url"] = gh_result["repo_url"]
-                progress_tracker.add_step(eid, "deployment", "github",
-                    detail=f"Repository created: {gh_result['repo_url']}")
-            else:
-                error_msg = gh_result.get("error", "unknown error")
-                logger.error("GitHub repo creation failed: %s", error_msg)
-                progress_tracker.add_step(eid, "deployment", "github",
-                    detail=f"GitHub repo creation FAILED: {error_msg}")
-        except Exception as exc:
-            logger.error("GitHub repo creation error: %s", exc)
+    try:
+        if not settings.GITHUB_TOKEN:
+            raise ValueError("GITHUB_TOKEN is not configured — add it to .env to enable GitHub deployment")
+        gh_result = await create_github_repo(
+            repo_name=repo_name,
+            description=description,
+            workspace_path=workspace_path,
+        )
+        if gh_result.get("success"):
+            result["github_repo_url"] = gh_result["repo_url"]
             progress_tracker.add_step(eid, "deployment", "github",
-                detail=f"GitHub error: {exc}")
+                detail=f"Repository created: {gh_result['repo_url']}")
+        else:
+            error_msg = gh_result.get("error", "unknown error")
+            logger.error("GitHub repo creation failed: %s", error_msg)
+            progress_tracker.add_step(eid, "deployment", "github",
+                detail=f"GitHub repo creation FAILED: {error_msg}")
+    except Exception as exc:
+        logger.error("GitHub repo creation error: %s", exc)
+        progress_tracker.add_step(eid, "deployment", "github",
+            detail=f"GitHub error: {exc}")
 
     # 3. Deploy to Vercel (MANDATORY for all coding tasks)
     progress_tracker.add_step(eid, "deployment", "vercel",
         detail="Deploying to Vercel for live preview")
 
-    if not settings.VERCEL_TOKEN and not settings.VERCEL_DEPLOY_ENDPOINT:
-        logger.warning("Neither VERCEL_TOKEN nor VERCEL_DEPLOY_ENDPOINT configured — Vercel deployment will be skipped")
-        progress_tracker.add_step(eid, "deployment", "vercel",
-            detail="VERCEL_TOKEN not configured — set it in .env to enable Vercel deployment")
-    else:
-        try:
-            vercel_result = await deploy_to_vercel(workspace_path)
-            if vercel_result.get("success"):
-                result["vercel_preview_url"] = vercel_result.get("preview_url")
-                result["vercel_claim_url"] = vercel_result.get("claim_url")
-                progress_tracker.add_step(eid, "deployment", "vercel",
-                    detail=f"Deployed! Preview: {vercel_result.get('preview_url')}")
-            else:
-                error_msg = vercel_result.get("error", "unknown error")
-                if "No deployable framework" in error_msg:
-                    progress_tracker.add_step(eid, "deployment", "vercel",
-                        detail="No framework detected — project may not be deployable to Vercel")
-                else:
-                    logger.warning("Vercel deploy failed: %s", error_msg)
-                    progress_tracker.add_step(eid, "deployment", "vercel",
-                        detail=f"Vercel deploy failed: {error_msg}")
-        except Exception as exc:
-            logger.warning("Vercel deployment error: %s", exc)
+    try:
+        if not settings.VERCEL_TOKEN and not settings.VERCEL_DEPLOY_ENDPOINT:
+            raise ValueError("Neither VERCEL_TOKEN nor VERCEL_DEPLOY_ENDPOINT is configured — add one to .env")
+        vercel_result = await deploy_to_vercel(workspace_path)
+        if vercel_result.get("success"):
+            result["vercel_preview_url"] = vercel_result.get("preview_url")
+            result["vercel_claim_url"] = vercel_result.get("claim_url")
             progress_tracker.add_step(eid, "deployment", "vercel",
-                detail=f"Vercel error: {exc}")
+                detail=f"Deployed! Preview: {vercel_result.get('preview_url')}")
+        else:
+            error_msg = vercel_result.get("error", "unknown error")
+            if "No deployable framework" in error_msg:
+                progress_tracker.add_step(eid, "deployment", "vercel",
+                    detail="No deployable framework detected — skipping Vercel for this project type")
+            else:
+                logger.warning("Vercel deploy failed: %s", error_msg)
+                progress_tracker.add_step(eid, "deployment", "vercel",
+                    detail=f"Vercel deploy failed: {error_msg}")
+    except Exception as exc:
+        logger.warning("Vercel deployment error: %s", exc)
+        progress_tracker.add_step(eid, "deployment", "vercel",
+            detail=f"Vercel error: {exc}")
 
     # 4. Final git commit with deployment metadata
     if workspace_path:
