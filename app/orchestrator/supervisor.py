@@ -325,6 +325,35 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
     plan = result.get("plan", [])
     subtask_titles = [s.get("title", "Step") for s in plan]
 
+    # ── Persist OrchSubtask records to database ───────────────────
+    # The frontend roadmap reads from the orch_subtasks table.
+    # Without these rows, the UI shows "Spinning up..." indefinitely.
+    if eid and plan:
+        try:
+            from app.db.engine import async_session
+            from app.db.models import OrchSubtask
+            from sqlalchemy import delete
+
+            async with async_session() as session:
+                # Clear any previous subtasks for this execution (e.g. on re-plan)
+                await session.execute(
+                    delete(OrchSubtask).where(OrchSubtask.execution_id == eid)
+                )
+                for idx, subtask in enumerate(plan):
+                    row = OrchSubtask(
+                        execution_id=eid,
+                        order_index=idx,
+                        title=subtask.get("title", f"Subtask {idx + 1}"),
+                        description=subtask.get("description", ""),
+                        status="pending",
+                        depends_on=subtask.get("depends_on", []),
+                    )
+                    session.add(row)
+                await session.commit()
+            logger.info("Persisted %d OrchSubtask records for execution %d", len(plan), eid)
+        except Exception as exc:
+            logger.warning("Failed to persist OrchSubtask records for execution %d: %s", eid, exc)
+
     # Git commit after planning
     workspace_path = state.get("workspace_path")
     if workspace_path:

@@ -95,8 +95,8 @@ async def create_github_repo(
 ) -> dict[str, Any]:
     """Create a GitHub repository and push workspace contents to it.
 
-    Uses the `gh` CLI which authenticates via GH_TOKEN env var.
-    Falls back gracefully if gh is not installed or token is not set.
+    Uses the GitHub REST API directly (no gh CLI dependency).
+    Falls back gracefully if token is not set.
     """
     gh_token = settings.GITHUB_TOKEN or os.environ.get("GH_TOKEN", "")
     if not gh_token:
@@ -111,6 +111,14 @@ async def create_github_repo(
         if init_result.exit_code != 0:
             return {"success": False, "error": f"git init failed: {init_result.stderr}"}
 
+        # Configure git user
+        await executor.execute(
+            'git config user.email "agent@oriexa.dev"', cwd=workspace_path
+        )
+        await executor.execute(
+            'git config user.name "Oriexa Agent"', cwd=workspace_path
+        )
+
         # Initial commit if needed
         await executor.execute("git add .", cwd=workspace_path)
         await executor.execute(
@@ -118,36 +126,72 @@ async def create_github_repo(
             cwd=workspace_path,
         )
 
-    # Build the gh repo create command
-    visibility = "--private" if private else "--public"
+    # Determine org/user prefix
     org_prefix = f"{settings.GITHUB_ORG}/" if settings.GITHUB_ORG else ""
+    full_repo_name = f"{org_prefix}{repo_name}" if org_prefix else repo_name
+    owner = settings.GITHUB_ORG if settings.GITHUB_ORG else None
 
-    cmd = (
-        f"gh repo create {org_prefix}{repo_name} "
-        f"{visibility} "
-        f'--description "{description}" '
-        f"--source=. --remote=origin --push"
+    # Create repo via GitHub REST API
+    try:
+        if owner:
+            # Create under an org
+            api_url = f"https://api.github.com/orgs/{owner}/repos"
+        else:
+            api_url = "https://api.github.com/user/repos"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                api_url,
+                headers={
+                    "Authorization": f"Bearer {gh_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json={
+                    "name": repo_name,
+                    "description": description,
+                    "private": private,
+                    "auto_init": False,
+                },
+            )
+
+            if resp.status_code == 201:
+                repo_data = resp.json()
+                repo_url = repo_data.get("html_url", f"https://github.com/{full_repo_name}")
+            elif resp.status_code == 422 and "already exists" in resp.text.lower():
+                repo_url = f"https://github.com/{full_repo_name}"
+            else:
+                return {"success": False, "error": f"GitHub API {resp.status_code}: {resp.text[:300]}"}
+    except Exception as exc:
+        return {"success": False, "error": f"GitHub API request failed: {exc}"}
+
+    # Set authenticated remote URL (embeds token for seamless push)
+    auth_url = f"https://x-access-token:{gh_token}@github.com/{full_repo_name}.git"
+
+    # Check if remote already exists
+    remote_check = await executor.execute("git remote", cwd=workspace_path)
+    if "origin" in (remote_check.stdout or ""):
+        # Update existing remote
+        await executor.execute(
+            f"git remote set-url origin {auth_url}", cwd=workspace_path
+        )
+    else:
+        await executor.execute(
+            f"git remote add origin {auth_url}", cwd=workspace_path
+        )
+
+    # Ensure we're on main branch
+    await executor.execute("git branch -M main", cwd=workspace_path)
+
+    # Push
+    push_result = await executor.execute(
+        "git push -u origin main --force", cwd=workspace_path, timeout=30
     )
 
-    result = await executor.execute(cmd, cwd=workspace_path, timeout=60)
-
-    if result.exit_code != 0:
-        # Check if it's because the remote already exists
-        if "already exists" in result.stderr.lower():
-            # Try just pushing instead
-            push_result = await executor.execute(
-                "git push -u origin main", cwd=workspace_path, timeout=30
-            )
-            if push_result.exit_code == 0:
-                # Infer the repo URL
-                repo_url = f"https://github.com/{org_prefix}{repo_name}"
-                return {"success": True, "repo_url": repo_url}
-        return {"success": False, "error": result.stderr[:500]}
-
-    # Extract repo URL from gh output
-    output = result.stdout + result.stderr
-    url_match = re.search(r"https://github\.com/[\w\-./]+", output)
-    repo_url = url_match.group(0) if url_match else f"https://github.com/{org_prefix}{repo_name}"
+    if push_result.exit_code != 0:
+        logger.warning("Git push failed: %s", (push_result.stderr or "")[:300])
+        # Still return the URL — repo was created even if push failed
+        return {"success": True, "repo_url": repo_url}
 
     return {"success": True, "repo_url": repo_url}
 

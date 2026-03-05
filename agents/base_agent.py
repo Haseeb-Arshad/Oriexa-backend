@@ -211,6 +211,30 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
         data = resp.json()
         return data["choices"][0]["message"]["content"]
     
+    elif provider == "openrouter":
+        if not OPENROUTER_KEY:
+            raise ValueError("OpenRouter API key not configured")
+        resp = httpx.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "openai/gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0.3,
+                "max_tokens": max_tokens,
+            },
+            timeout=3600.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+    
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -218,18 +242,18 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
 def smart_llm_call(system: str, user: str, max_tokens: int = 2048, complexity: str = "routine") -> str:
     """Routes to Kimi/Trinity first, falling back to Claude only if needed or complex."""
     if complexity == "extreme":
-        providers = ["claude-sonnet", "kimi", "trinity"]
+        providers = ["claude-sonnet", "kimi", "trinity", "openrouter"]
     elif complexity == "high":
-        providers = ["kimi", "claude-sonnet", "trinity"]
+        providers = ["kimi", "claude-sonnet", "trinity", "openrouter"]
     else:
-        providers = ["kimi", "trinity", "claude-sonnet"]
+        providers = ["kimi", "trinity", "claude-sonnet", "openrouter"]
     
     last_error = "No providers attempted"
     for p in providers:
         # Skip if no key
         if p.startswith("claude") and not ANTHROPIC_KEY: continue
         if p == "kimi" and not (MOONSHOT_API_KEY or KIMI_KEY): continue
-        if p == "trinity" and not OPENROUTER_KEY: continue
+        if p in ["trinity", "openrouter"] and not OPENROUTER_KEY: continue
 
         # Internal retry for the same provider on transient errors
         for attempt in range(2):
@@ -477,9 +501,30 @@ def trinity_enhance_prompt(prompt: str) -> str:
             return data["choices"][0]["message"]["content"]
         else:
             log_warn(f"Trinity Free API failure: {data}")
-            return prompt
+            return openrouter_enhance_prompt(prompt)
     except Exception as e:
         log_err(f"Trinity enhancement failed: {e}")
+        return openrouter_enhance_prompt(prompt)
+
+def openrouter_enhance_prompt(prompt: str) -> str:
+    """Uses a generic robust OpenRouter model as a final fallback for enhancement."""
+    if not OPENROUTER_KEY:
+        return prompt
+
+    sys_prompt = ("You are a world-class Staff Software Architect. Enhance these basic requirements into a detailed technical specification. "
+                  "CRITICAL: Always prioritize the latest versions of all technologies, frameworks, and libraries. "
+                  "If you encounter obstacles or past failures, you MUST be extremely proactive: resolve the issues whatever it takes, "
+                  "even if it means changing the architecture, switching tools, or adopting a different approach to bypass the blocker.")
+    try:
+        enhanced = llm_call(
+            sys_prompt, 
+            prompt, 
+            max_tokens=4000, 
+            provider="openrouter"
+        )
+        return enhanced
+    except Exception as e:
+        log_err(f"OpenRouter Fallback enhancement failed: {e}")
         return prompt
 
 

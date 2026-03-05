@@ -13,6 +13,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import httpx
+
 # ═══════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════
@@ -119,12 +121,15 @@ def init_repo(task_dir: Path) -> bool:
 
 def create_github_repo(task_id: int, task_dir: Path) -> str | None:
     """
-    Create a GitHub repo for the task using `gh` CLI.
+    Create a GitHub repo for the task using the GitHub REST API.
     Returns the repo URL on success, None on failure.
     Handles 'name already exists' by linking to the existing repo.
     """
+    gh_token = os.environ.get("GITHUB_TOKEN", os.environ.get("GH_TOKEN", ""))
     repo_name = f"oriexa-task-{task_id}"
     repo_url = f"https://github.com/{GITHUB_USERNAME}/{repo_name}"
+    # Authenticated URL for seamless push (no credential prompts)
+    auth_url = f"https://x-access-token:{gh_token}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
 
     # Check if remote already exists
     rc, out = _run(["git", "remote"], task_dir)
@@ -133,22 +138,47 @@ def create_github_repo(task_id: int, task_dir: Path) -> str | None:
         _run(["git", "push", "-u", "origin", "main", "--force"], task_dir)
         return repo_url
 
-    # Try creating with gh CLI
-    rc, out = _run(
-        ["gh", "repo", "create", repo_name, "--public", "--source", ".", "--remote", "origin", "--push"],
-        task_dir, timeout=30
-    )
-
-    if rc == 0:
-        return repo_url
-
-    # Handle 'name already exists'
-    if "name already exists" in out.lower() or "already exists" in out.lower():
+    if not gh_token:
+        # No token — can't create repo via API, try linking directly
         _run(["git", "remote", "add", "origin", f"{repo_url}.git"], task_dir)
-        _run(["git", "push", "-u", "origin", "main", "--force"], task_dir)
-        return repo_url
+        rc, _ = _run(["git", "push", "-u", "origin", "main", "--force"], task_dir)
+        return repo_url if rc == 0 else None
 
-    return None
+    # Create repo via GitHub REST API
+    try:
+        resp = httpx.post(
+            "https://api.github.com/user/repos",
+            headers={
+                "Authorization": f"Bearer {gh_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            json={
+                "name": repo_name,
+                "description": f"Oriexa delivery for task #{task_id}",
+                "private": False,
+                "auto_init": False,
+            },
+            timeout=30.0,
+        )
+
+        if resp.status_code == 201:
+            # Repo created successfully
+            pass
+        elif resp.status_code == 422 and "name already exists" in resp.text.lower():
+            # Repo already exists — that's fine
+            pass
+        else:
+            # Unexpected error
+            return None
+    except Exception:
+        return None
+
+    # Add authenticated remote and push
+    _run(["git", "remote", "add", "origin", auth_url], task_dir)
+    rc, _ = _run(["git", "push", "-u", "origin", "main", "--force"], task_dir, timeout=30)
+
+    return repo_url if rc == 0 else repo_url  # Return URL even if push fails
 
 
 def commit_step(

@@ -70,6 +70,35 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             log_warn("No real test command provided. Will still verify build.", AGENT_NAME)
             test_command = None  # Mark as no explicit tests, but continue to build check
 
+        # ── Detect non-runnable / interactive test commands ───────────
+        # LLMs sometimes generate browser-open instructions, dev-server
+        # commands, or manual instructions instead of real test runners.
+        # Detect these and skip gracefully so we don't loop forever.
+        if test_command:
+            cmd_lower = test_command.strip().lower()
+            NON_RUNNABLE_PATTERNS = [
+                "open ",          # "open index.html in browser"
+                "start ",         # "start http://localhost"
+                "npm start",      # dev server, not tests
+                "npm run dev",    # dev server
+                "npm run serve",  # dev server
+                "npx vite",       # dev server
+                "python manage.py runserver",
+                "python -m http.server",
+                "live-server",
+                "manually ",      # "manually test the page"
+                "visit ",         # "visit http://localhost"
+                "browse ",
+                "click ",         # "click the button to verify"
+            ]
+            if any(cmd_lower.startswith(p) or p in cmd_lower for p in NON_RUNNABLE_PATTERNS):
+                log_warn(
+                    f"Detected non-runnable test command: '{test_command}'. "
+                    "Skipping tests — will rely on build verification.",
+                    AGENT_NAME,
+                )
+                test_command = None
+
         # ── Auto-install dependencies ─────────────────────────────────
         write_progress(task_dir, task_id, "testing", "Installing dependencies",
                        "Installing project dependencies before running tests",
