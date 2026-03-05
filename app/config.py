@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     MOONSHOT_API_KEY: str = ""  # For Kimi models
 
     # Model IDs per tier — supports OpenRouter free, Anthropic direct, Moonshot
-    FAST_MODEL: str = "openrouter/arcee-ai/trinity-large-preview:free"
-    DEFAULT_MODEL: str = "openrouter/stepfun/step-3.5-flash:free"
-    STRONG_MODEL: str = "anthropic/claude-opus-4-5-20250514"
+    FAST_MODEL: str = "minimax/minimax-m2.5"
+    DEFAULT_MODEL: str = "minimax/minimax-m2.5"
+    STRONG_MODEL: str = "anthropic/claude-sonnet-4.6"
     THINKING_MODEL: str = "moonshot/kimi-k2.5-thinking"  # Deep reasoning tasks
 
     # Frontend coding agent model tiers
