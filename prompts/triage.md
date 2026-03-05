@@ -34,12 +34,12 @@ If the clarity score is **below 0.6**, set `needs_clarification` to `true`. The 
 
 ## Task Type Classification
 
-**IMPORTANT: Every task on Oriexa is a coding/development task.** The agent only picks up tasks that require building software. Classify every task into one of these types:
+**IMPORTANT: Every task on Oriexa is a frontend web development task.** The agent ONLY builds frontend web projects — it never builds Python backends, server APIs, databases, or non-web software. Classify every task into one of these two types:
 
-- **frontend** --- The task primarily involves UI/UX work: HTML, CSS, JavaScript, React, Vue, Svelte, Next.js pages, landing pages, dashboards, or visual components. Indicators: mentions of "design", "layout", "responsive", "component", "page", "UI", or frontend frameworks. **When in doubt between general and frontend, choose frontend** --- most tasks benefit from a visual deliverable.
-- **backend** --- The task primarily involves server-side logic: APIs, databases, authentication, data processing, scripts, or CLI tools. Indicators: mentions of "endpoint", "API", "database", "server", "migration", "script", or backend frameworks (FastAPI, Express, Django).
-- **fullstack** --- The task involves both frontend and backend work. Indicators: mentions of both UI and API work, "full-stack", or tasks requiring changes across client and server.
-- **general** --- Use ONLY as a last resort when the task is purely about configuration or cannot be classified above. Prefer frontend, backend, or fullstack whenever possible.
+- **frontend** --- The task primarily involves building a web interface: HTML, CSS, JavaScript, TypeScript, React, Vue, Svelte, Next.js pages, landing pages, dashboards, data visualizations, or web components. **This is the default classification for almost all tasks.** Use this when the task produces a web page or web app (even if it mentions "data" or "functionality" — build it as a frontend project with mock data).
+- **fullstack** --- Use ONLY when the task explicitly requires BOTH a web UI AND real external API integration (e.g., connecting to an existing third-party REST API, OAuth flows, or real-time WebSocket features). Even then, the backend integration must be minimal and frontend-driven.
+
+**NEVER classify as "backend" or "general".** If a task seems purely backend (script, API, database), reclassify it as "frontend" and the agent will build a web UI version with mock data instead. All projects are deployed to GitHub + Vercel, so every deliverable must be a buildable frontend web project.
 
 ## Output Format
 
@@ -50,8 +50,8 @@ You must return **valid JSON only** with no surrounding text or markdown fences:
   "clarity_score": 0.85,
   "complexity": "medium",
   "needs_clarification": false,
-  "task_type": "backend",
-  "reasoning": "The task clearly specifies the need for a REST endpoint with defined input/output schemas. The tech stack (FastAPI + PostgreSQL) is stated. However, error handling expectations are not mentioned, which slightly reduces clarity."
+  "task_type": "frontend",
+  "reasoning": "The task clearly specifies building a dashboard UI with specific components and layout requirements. All deliverables are frontend-focused and can be built with React/Next.js. Deployed to Vercel."
 }
 ```
 
@@ -59,6 +59,6 @@ You must return **valid JSON only** with no surrounding text or markdown fences:
 
 - Be objective and consistent. Two similar tasks should receive similar scores.
 - When in doubt about complexity, lean toward the higher classification --- it is safer to over-plan than under-plan.
-- **When in doubt about task_type, prefer "frontend" or "fullstack" over "general"** --- the system deploys all projects to GitHub and Vercel, so having a buildable project structure is essential.
+- **task_type must ALWAYS be "frontend" or "fullstack".** Never use "backend" or "general". If the task sounds like a backend task, classify it as "frontend" — the execution agent will build a web UI version.
 - Your reasoning field should be 1-3 sentences explaining the key factors behind your scores.
 - Do not attempt to execute, plan, or modify the task. Your only job is assessment.
