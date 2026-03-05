@@ -110,7 +110,10 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             if is_site_project and has_build_script:
                 log_think("Site project detected — running production build first...", AGENT_NAME)
                 append_build_log(task_dir, "Running: npm run build")
-                build_rc, build_out = run_shell_combined("npm run build", task_dir, timeout=7200)
+                build_rc, build_out = run_shell_combined(
+                    "npm run build", task_dir, timeout=7200,
+                    env={"NODE_OPTIONS": "--max-old-space-size=512"},
+                )
                 log_command(task_dir, "npm run build", build_rc, build_out)
 
                 if build_rc != 0:

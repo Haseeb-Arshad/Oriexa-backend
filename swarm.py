@@ -499,6 +499,7 @@ def main():
         base_url=args.base_url,
         capabilities=capabilities,
         interval=args.interval,
+        max_active=MAX_CONCURRENT_TASKS,
     )
 
     if args.dry_run:

@@ -69,12 +69,13 @@ def run_shell_combined(
     cwd: Path,
     timeout: int = 7200,
     shell: bool = True,
+    env: dict | None = None,
 ) -> tuple[int, str]:
     """
     Execute a shell command and return combined stdout+stderr.
     Convenience wrapper around run_shell.
     """
-    rc, stdout, stderr = run_shell(cmd, cwd, timeout, shell)
+    rc, stdout, stderr = run_shell(cmd, cwd, timeout, shell, env)
     combined = (stdout + "\n" + stderr).strip()
     return rc, combined
 
@@ -134,8 +135,10 @@ def run_npm_install(task_dir: Path, retries: int = 2) -> tuple[int, str]:
     Run npm install with retry logic.
     Returns (return_code, output).
     """
+    # Cap Node.js heap to 512 MB to prevent OOM kills on small droplets
+    node_env = {"NODE_OPTIONS": "--max-old-space-size=512"}
     for attempt in range(retries + 1):
-        rc, output = run_shell_combined("npm install", task_dir, timeout=7200)
+        rc, output = run_shell_combined("npm install", task_dir, timeout=7200, env=node_env)
         if rc == 0:
             return rc, output
 
