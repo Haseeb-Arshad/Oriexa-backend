@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # ═══════════════════════════════════════════════════════════════════════════
 
 WORKSPACE_DIR = Path(
-    os.environ.get("AGENT_WORKSPACE_DIR", "/opt/oriexa/agent_works")
+    os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent / "agent_works"))
 )
 NEXT_APP_URL = os.environ.get("NEXT_APP_URL", "http://localhost:3000")
 PORT = int(os.environ.get("PORT", 8000))
@@ -105,8 +105,21 @@ def err(message: str, code: int = 404) -> JSONResponse:
 @app.get("/orchestrator/tasks/by-task/{task_id}/active")
 async def get_active_execution(task_id: int):
     """Return the active execution ID for a task (1:1 with task_id)."""
+    task_dir = get_task_dir(task_id)
     state = read_state(task_id)
+
+    # If the workspace dir exists but no state file yet, the Coder hasn't started
+    # writing yet but is likely queued. Return a "queued" execution so the frontend
+    # gets an execution_id and the SSE stream can connect and wait for data.
     if state is None:
+        if task_dir.exists():
+            return ok({
+                "execution_id": task_id,
+                "task_id": task_id,
+                "status": "queued",
+                "started_at": None,
+                "workspace_path": str(task_dir),
+            })
         return err(f"No active execution for task {task_id}")
 
     return ok({
@@ -114,7 +127,7 @@ async def get_active_execution(task_id: int):
         "task_id": task_id,
         "status": state.get("status", "coding"),
         "started_at": state.get("started_at"),
-        "workspace_path": str(get_task_dir(task_id)),
+        "workspace_path": str(task_dir),
     })
 
 
@@ -122,8 +135,22 @@ async def get_active_execution(task_id: int):
 async def get_execution(execution_id: int):
     """Return execution metadata and status."""
     task_id = execution_id  # 1:1 mapping
+    task_dir = get_task_dir(task_id)
     state = read_state(task_id)
     if state is None:
+        if task_dir.exists():
+            return ok({
+                "id": execution_id,
+                "status": "queued",
+                "total_tokens_used": 0,
+                "total_cost_usd": None,
+                "attempt_count": 0,
+                "started_at": None,
+                "completed_at": None,
+                "workspace_path": str(task_dir),
+                "error_message": None,
+                "plan": None,
+            })
         return err(f"Execution {execution_id} not found")
 
     # Count progress lines for token estimate
@@ -158,8 +185,20 @@ async def get_execution(execution_id: int):
 async def get_execution_preview(execution_id: int):
     """Return the plan steps as subtasks for the journey map UI."""
     task_id = execution_id
+    task_dir = get_task_dir(task_id)
     state = read_state(task_id)
     if state is None:
+        if task_dir.exists():
+            # Coder hasn't started yet — show a "queued" planning step
+            return ok({"execution_id": execution_id, "subtasks": [
+                {
+                    "id": 0, "order_index": 0,
+                    "title": "Planning",
+                    "description": "Agent is starting up and creating an implementation plan...",
+                    "status": "in_progress",
+                    "result": None, "files_changed": None,
+                }
+            ]})
         return err(f"Execution {execution_id} not found")
 
     plan = read_plan(task_id) or state.get("plan")

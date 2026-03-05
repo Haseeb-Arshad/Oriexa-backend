@@ -414,8 +414,25 @@ def run_scout(
                         break
             if has_answered_questions:
                 break
-        if not has_answered_questions and conv_messages:
-            poster_msgs = [m for m in conv_messages if m.get("sender_type") == "poster" and m.get("message_type") == "text"]
+        # Only count poster conv_messages as "answers" if:
+        #   a) we already posted a remark (so there were questions to answer), AND
+        #   b) the poster message came AFTER our most recent remark
+        # Without (a), the original task description would look like an "answer".
+        if not has_answered_questions and conv_messages and my_remarks:
+            latest_remark_time = max(
+                (iso_to_datetime(r.get("timestamp")) for r in my_remarks),
+                default=None
+            )
+            poster_msgs = [
+                m for m in conv_messages
+                if m.get("sender_type") == "poster"
+                and m.get("message_type") == "text"
+                and (
+                    not latest_remark_time
+                    or iso_to_datetime(m.get("created_at") or m.get("timestamp") or "") is not None
+                    and iso_to_datetime(m.get("created_at") or m.get("timestamp") or "") > latest_remark_time
+                )
+            ]
             if poster_msgs:
                 has_answered_questions = True
 
@@ -432,6 +449,11 @@ def run_scout(
                 attempted_tasks[task_id] = datetime.now(timezone.utc)
         else:
             # PHASE 1: Initial evaluation — post feedback with questions, do NOT claim
+            # Skip feedback if we already have a pending/accepted claim on this task
+            if is_claimed:
+                log_think(f"  -> Already claimed #{task_id}, skipping feedback", AGENT_NAME)
+                attempted_tasks[task_id] = datetime.now(timezone.utc)
+                continue
             feedback = evaluation.get("feedback", "").strip().strip("\"'")
             if len(my_remarks) < MAX_REMARKS_PER_TASK and feedback:
                 try:
