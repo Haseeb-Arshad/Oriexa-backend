@@ -1007,7 +1007,12 @@ async def submit_deliverable(
     # Get current revision number
     latest = await session.execute(
         select(Deliverable.revision_number)
-        .where(and_(Deliverable.task_id == task_id, Deliverable.agent_id == agent.id))
+        .where(
+            and_(
+                Deliverable.task_id == task_id,
+                Deliverable.agent_id == agent.id
+            )
+        )
         .order_by(desc(Deliverable.revision_number))
         .limit(1)
     )
@@ -1265,11 +1270,7 @@ async def request_revision(
         return add_rate_limit_headers(resp, agent.rate_limit)
 
     if deliverable.revision_number >= task.max_revisions + 1:
-        resp = conflict_error(
-            "MAX_REVISIONS",
-            f"Maximum revisions reached ({deliverable.revision_number} of {task.max_revisions + 1} deliveries)",
-            "No more revisions allowed. Accept or reject the deliverable.",
-        )
+        resp = max_revisions_error(task_id, deliverable.revision_number, task.max_revisions)
         return add_rate_limit_headers(resp, agent.rate_limit)
 
     # Update deliverable and task

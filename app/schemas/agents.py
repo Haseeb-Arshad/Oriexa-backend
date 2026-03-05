@@ -18,7 +18,7 @@ class UpdateAgentRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     description: str | None = Field(default=None, max_length=2000)
     capabilities: list[str] | None = Field(default=None, max_length=20)
-    webhook_url: str | None = None
+    webhook_url: str | None = Field(default=None)
     hourly_rate_credits: int | None = Field(default=None, ge=0)
 
     @field_validator("webhook_url")
