@@ -283,6 +283,28 @@ async def get_execution_preview(execution_id: int):
     return ok({"execution_id": execution_id, "subtasks": subtasks})
 
 
+@app.get("/orchestrator/tasks/{execution_id}/logs")
+async def get_execution_logs(execution_id: int):
+    """Return raw build log content for a task execution."""
+    task_id = execution_id
+    task_dir = get_task_dir(task_id)
+    if not task_dir.exists():
+        return err(f"Execution {execution_id} not found")
+
+    log_file = task_dir / ".build_log"
+    if not log_file.exists():
+        return ok(None)
+
+    try:
+        content = log_file.read_text(encoding="utf-8", errors="replace")
+        # Return last 8000 chars to avoid huge payloads
+        if len(content) > 8000:
+            content = "... (truncated) ...\n" + content[-8000:]
+        return ok(content)
+    except Exception:
+        return ok(None)
+
+
 @app.get("/orchestrator/progress/executions/{execution_id}/stream")
 async def stream_progress(execution_id: int, request: Request):
     """Server-Sent Events stream of progress steps from progress.jsonl."""

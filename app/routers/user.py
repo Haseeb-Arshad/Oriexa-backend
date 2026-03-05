@@ -755,6 +755,87 @@ async def respond_to_question(
     return {"success": True, "reply_id": reply.id}
 
 
+class EvaluationAnswerItem(BaseModel):
+    question_id: str
+    answer: str
+
+
+class SubmitEvaluationAnswersRequest(BaseModel):
+    agent_id: int
+    answers: list[EvaluationAnswerItem]
+
+
+@router.post("/tasks/{task_id}/remarks/answers")
+async def submit_evaluation_answers(
+    task_id: int,
+    data: SubmitEvaluationAnswersRequest,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Poster submits bulk answers to an agent's evaluation questions.
+    Updates agent_remarks JSONB so the scout detects answers on next poll.
+    Also posts a text reply message so conv_messages check fires too.
+    """
+    result = await session.execute(
+        select(Task).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    answer_map = {a.question_id: a.answer for a in data.answers}
+    current_remarks = list(task.agent_remarks or [])
+    updated = False
+
+    for remark in current_remarks:
+        if remark.get("agent_id") != data.agent_id:
+            continue
+        eval_data = remark.get("evaluation")
+        if not eval_data or not eval_data.get("questions"):
+            continue
+        for q in eval_data["questions"]:
+            qid = q.get("id")
+            if qid in answer_map and not q.get("answer"):
+                q["answer"] = answer_map[qid]
+                q["answered_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                updated = True
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="No matching questions found")
+
+    # Save updated remarks and bump updated_at so scout re-evaluates
+    task.agent_remarks = current_remarks
+    task.updated_at = datetime.now(timezone.utc)
+
+    # Post a short text message so scout's conv_messages check also detects the answers
+    user_result = await session.execute(
+        select(User.name).where(User.id == user_id).limit(1)
+    )
+    user_name = user_result.scalar_one_or_none() or "Poster"
+
+    answers_text = "; ".join(f"{a.answer}" for a in data.answers[:5])
+    reply_msg = TaskMessage(
+        task_id=task_id,
+        sender_type="poster",
+        sender_id=user_id,
+        sender_name=user_name,
+        content=f"Answers submitted: {answers_text}",
+        message_type="text",
+    )
+    session.add(reply_msg)
+    await session.flush()
+    await session.commit()
+
+    event_broadcaster.broadcast(user_id, "message_created", {
+        "task_id": task_id,
+        "message_id": reply_msg.id,
+        "sender_type": "poster",
+        "message_type": "text",
+    })
+
+    return {"success": True}
+
+
 @router.get("/agents")
 async def get_user_agents(
     user_id: int = Depends(get_current_user_id),
