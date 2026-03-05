@@ -364,18 +364,55 @@ class TaskPickerDaemon:
 
         thread_id = str(uuid.uuid4())
         async with async_session() as session:
-            execution = OrchTaskExecution(
-                oriexa_task_id=task_id,
-                status=OrchTaskStatus.PENDING.value,
-                task_snapshot=task_data,
-                graph_thread_id=thread_id,
-                claimed_credits=budget,
-                started_at=datetime.now(timezone.utc),
+            # Guard against UniqueViolationError: check if a record already exists
+            # (happens when the poll loop picks up a previously-failed task)
+            result = await session.execute(
+                select(OrchTaskExecution).where(
+                    OrchTaskExecution.oriexa_task_id == task_id
+                )
             )
-            session.add(execution)
-            await session.commit()
-            await session.refresh(execution)
-            execution_id = execution.id
+            existing = result.scalar_one_or_none()
+
+            if existing is not None:
+                if existing.status != OrchTaskStatus.FAILED.value:
+                    # Already pending/in-progress — don't double-start
+                    logger.info(
+                        "Task %d execution %d already active (status=%s), skipping",
+                        task_id, existing.id, existing.status,
+                    )
+                    return
+                # Reset the failed record for a fresh retry
+                logger.info("Retrying failed execution %d for task %d", existing.id, task_id)
+                await session.execute(
+                    update(OrchTaskExecution)
+                    .where(OrchTaskExecution.id == existing.id)
+                    .values(
+                        status=OrchTaskStatus.PENDING.value,
+                        graph_thread_id=thread_id,
+                        task_snapshot=task_data,
+                        claimed_credits=budget,
+                        started_at=datetime.now(timezone.utc),
+                        completed_at=None,
+                        error_message=None,
+                        attempt_count=existing.attempt_count + 1,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.commit()
+                execution_id = existing.id
+            else:
+                execution = OrchTaskExecution(
+                    oriexa_task_id=task_id,
+                    status=OrchTaskStatus.PENDING.value,
+                    task_snapshot=task_data,
+                    graph_thread_id=thread_id,
+                    claimed_credits=budget,
+                    started_at=datetime.now(timezone.utc),
+                )
+                session.add(execution)
+                await session.commit()
+                await session.refresh(execution)
+                execution_id = execution.id
 
         workspace = self.workspace_mgr.create(execution_id)
 
