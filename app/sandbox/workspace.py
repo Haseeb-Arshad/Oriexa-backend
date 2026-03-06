@@ -20,6 +20,13 @@ class WorkspaceManager:
     def create(self, execution_id: int) -> Path:
         workspace = self.root / f"task-{execution_id}"
         workspace.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize git tracking so the agent can commit code
+        import subprocess
+        subprocess.run(["git", "init"], cwd=workspace, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Oriexa Agent"], cwd=workspace, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "agent@oriexa.ai"], cwd=workspace, capture_output=True)
+        
         logger.info("Created workspace: %s", workspace)
         return workspace
 

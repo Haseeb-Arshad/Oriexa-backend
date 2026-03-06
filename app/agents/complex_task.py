@@ -142,8 +142,13 @@ class ComplexTaskAgent(BaseAgent):
                 else:
                     tool_result = f"[ERROR] Unknown tool: {tool_name}"
 
+                # Truncate extremely long outputs to save LLM tokens
+                tool_result_str = str(tool_result)
+                if len(tool_result_str) > 4000:
+                    tool_result_str = tool_result_str[:4000] + "\n...[TRUNCATED to save tokens]..."
+
                 messages.append(
-                    ToolMessage(content=str(tool_result), tool_call_id=tool_id)
+                    ToolMessage(content=tool_result_str, tool_call_id=tool_id)
                 )
 
                 # Track side effects
@@ -270,6 +275,16 @@ def _parse_execution_result(content: str, plan: list[dict[str, Any]]) -> dict[st
             except json.JSONDecodeError:
                 pass
             break
+
+    import re
+    match = re.search(r'(\{.*\}|\[.*\])', content, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
 
     logger.error("ComplexTaskAgent: could not parse result JSON: %s", content[:500])
 

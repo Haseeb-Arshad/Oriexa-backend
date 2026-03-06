@@ -589,7 +589,7 @@ class TaskPickerDaemon:
                         graph_thread_id=thread_id,
                         task_snapshot=task_data,
                         claimed_credits=budget,
-                        started_at=datetime.now(timezone.utc),
+                        started_at=None,
                         completed_at=None,
                         error_message=None,
                         attempt_count=existing.attempt_count + 1,
@@ -605,7 +605,7 @@ class TaskPickerDaemon:
                     task_snapshot=task_data,
                     graph_thread_id=thread_id,
                     claimed_credits=budget,
-                    started_at=datetime.now(timezone.utc),
+                    started_at=None,
                 )
                 session.add(execution)
                 await session.commit()

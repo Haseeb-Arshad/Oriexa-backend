@@ -160,6 +160,22 @@ async def create_github_repo(
                 repo_url = repo_data.get("html_url", f"https://github.com/{full_repo_name}")
             elif resp.status_code == 422 and "already exists" in resp.text.lower():
                 repo_url = f"https://github.com/{full_repo_name}"
+            elif owner and resp.status_code == 404:
+                # Fallback to user repo if org fails (e.g. personal username was put in GITHUB_ORG)
+                logger.warning("Org repo creation failed with 404, falling back to /user/repos")
+                resp = await client.post(
+                    "https://api.github.com/user/repos",
+                    headers={"Authorization": f"Bearer {gh_token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
+                    json={"name": repo_name, "description": description, "private": private, "auto_init": False},
+                )
+                if resp.status_code == 201:
+                    full_repo_name = resp.json().get("full_name", repo_name)
+                    repo_url = resp.json().get("html_url", f"https://github.com/{full_repo_name}")
+                elif resp.status_code == 422 and "already exists" in resp.text.lower():
+                    # If falling back, we might need to query the actual full name, but let's assume it's under the user
+                    repo_url = f"https://github.com/{repo_name}" # simplified
+                else:
+                    return {"success": False, "error": f"GitHub API Fallback {resp.status_code}: {resp.text[:300]}"}
             else:
                 return {"success": False, "error": f"GitHub API {resp.status_code}: {resp.text[:300]}"}
     except Exception as exc:

@@ -10,7 +10,11 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from app.config import settings
 
 
 @dataclass
@@ -164,6 +168,20 @@ class ProgressTracker:
             event.set()
             # Reset for next wait
             self._events[execution_id] = asyncio.Event()
+
+        # Write to .build_log in workspace
+        try:
+            workspace = Path(settings.WORKSPACE_ROOT) / f"task-{execution_id}"
+            if workspace.exists():
+                log_file = workspace / ".build_log"
+                import datetime
+                timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
+                # Format similar to what activity log shows
+                log_line = f"[{timestamp_str}] [{phase}] {detail or description}\n"
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(log_line)
+        except Exception:
+            pass  # Fail gracefully if workspace not ready
 
         return step
 

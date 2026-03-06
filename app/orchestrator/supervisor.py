@@ -503,15 +503,39 @@ async def complex_execution_node(state: TaskState) -> dict[str, Any]:
 async def review_node(state: TaskState) -> dict[str, Any]:
     """Run the ReviewAgent to validate the deliverable."""
     from app.agents.review import ReviewAgent
+    from app.tools.deployment import run_full_test_suite
 
     eid = _eid(state)
+    workspace_path = state.get("workspace_path", "")
+
     progress_tracker.add_step(eid, "review", "start",
         detail="Putting on the reviewer hat — checking everything against the original requirements")
+    
+    # 1. Run full test suite to gate delivery
+    progress_tracker.add_step(eid, "review", "testing",
+        detail="Running lint, typecheck, unit tests, and build verification")
+
+    test_results = {}
+    if workspace_path:
+        try:
+            test_results = await run_full_test_suite(workspace_path)
+            summary = test_results.get("summary", "No tests run")
+            progress_tracker.add_step(eid, "review", "testing",
+                detail=f"Test suite complete: {summary}",
+                metadata=test_results)
+        except Exception as exc:
+            logger.warning("Review: test suite failed: %s", exc)
+            test_results = {"summary": f"Error: {exc}", "error": str(exc)}
+
     progress_tracker.add_step(eid, "review", "thinking",
         detail="Evaluating completeness, correctness, code quality, and test coverage")
 
     agent = ReviewAgent()
-    result = await agent.run(state)
+    # Inject test results into the state so ReviewAgent can see them
+    state_for_agent = dict(state)
+    state_for_agent["test_results"] = test_results
+    
+    result = await agent.run(state_for_agent)
 
     score = result.get("score", 0)
     passed = result.get("passed", False)
@@ -540,21 +564,21 @@ async def review_node(state: TaskState) -> dict[str, Any]:
         "review_score": score,
         "review_passed": passed,
         "review_feedback": feedback,
+        "test_results": test_results,
         "total_prompt_tokens": state.get("total_prompt_tokens", 0) + result.get("prompt_tokens", 0),
         "total_completion_tokens": state.get("total_completion_tokens", 0) + result.get("completion_tokens", 0),
     }
 
 
 async def deployment_node(state: TaskState) -> dict[str, Any]:
-    """Run tests, create GitHub repo, and deploy to Vercel.
-
+    """Create GitHub repo and deploy to Vercel.
+    
     This is a deterministic node — no LLM calls. It runs deployment tools
     programmatically and collects results. Failures are non-blocking.
     """
     from app.tools.deployment import (
         create_github_repo,
         deploy_to_vercel,
-        run_full_test_suite,
     )
 
     eid = _eid(state)
@@ -564,30 +588,15 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
     execution_id = state.get("execution_id", 0)
 
     progress_tracker.add_step(eid, "deployment", "start",
-        detail="Running the deployment pipeline: tests, GitHub, Vercel")
+        detail="Running the deployment pipeline: GitHub, Vercel")
 
     result: dict[str, Any] = {
         "phase": "deployment",
         "github_repo_url": None,
         "vercel_preview_url": None,
         "vercel_claim_url": None,
-        "test_results": {},
+        "test_results": state.get("test_results", {}), # pass it forward so lifecycle formatting uses it
     }
-
-    # 1. Run full test suite
-    progress_tracker.add_step(eid, "deployment", "testing",
-        detail="Running lint, typecheck, unit tests, and build verification")
-
-    try:
-        test_results = await run_full_test_suite(workspace_path)
-        result["test_results"] = test_results
-        summary = test_results.get("summary", "No tests run")
-        progress_tracker.add_step(eid, "deployment", "testing",
-            detail=f"Test suite complete: {summary}",
-            metadata=test_results)
-    except Exception as exc:
-        logger.warning("Deployment: test suite failed: %s", exc)
-        result["test_results"] = {"summary": f"Error: {exc}", "error": str(exc)}
 
     # 2. Create GitHub repo (MANDATORY — all deliveries must be on GitHub)
     progress_tracker.add_step(eid, "deployment", "github",
@@ -679,13 +688,13 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
                 progress_tracker.add_step(eid, "deployment", "vercel",
                     detail="No deployable framework detected — skipping Vercel for this project type")
             else:
-                logger.warning("Vercel deploy failed: %s", error_msg)
+                logger.warning("Vercel deploy failed (non-fatal): %s", error_msg)
                 progress_tracker.add_step(eid, "deployment", "vercel",
-                    detail=f"Vercel deploy failed: {error_msg}")
+                    detail=f"Vercel deploy failed (Non-fatal, continuing): {error_msg}")
     except Exception as exc:
-        logger.warning("Vercel deployment error: %s", exc)
+        logger.warning("Vercel deployment error (non-fatal): %s", exc)
         progress_tracker.add_step(eid, "deployment", "vercel",
-            detail=f"Vercel error: {exc}")
+            detail=f"Vercel error (Non-fatal, continuing): {exc}")
 
     # 4. Final git commit with deployment metadata
     if workspace_path:
