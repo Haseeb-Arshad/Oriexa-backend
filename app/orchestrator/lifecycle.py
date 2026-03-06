@@ -11,63 +11,98 @@ logger = logging.getLogger(__name__)
 
 
 async def deliver_task(state: dict[str, Any]) -> dict[str, Any]:
-    """Submit the deliverable to Oriexa and update execution status."""
+    """Submit a lean, structured deliverable to Oriexa.
+
+    Instead of dumping raw source code into the API payload, this builds
+    a compact markdown summary. The actual code lives in the workspace /
+    Git repo — the deliverable just describes what was built.
+    """
     client = OriexaClient()
     task_id = state.get("oriexa_task_id")
-    content = state.get("deliverable_content", "")
+    summary = state.get("deliverable_content", "")  # Already a summary from the new agents
 
-    if not task_id or not content:
-        logger.error("Cannot deliver: missing task_id or content")
+    if not task_id:
+        logger.error("Cannot deliver: missing task_id")
         await client.close()
-        return {"error": "Missing task_id or deliverable content"}
+        return {"error": "Missing task_id"}
 
     try:
-        # Build a comprehensive deliverable
-        deliverable_parts = [content]
+        # ── Build structured markdown deliverable ────────────────────
+        sections: list[str] = []
 
-        # Append deployment URLs if available
+        # 1. Summary (from the LLM — this is now a lean description, not raw code)
+        if summary:
+            sections.append("## Summary\n")
+            sections.append(summary.strip())
+        else:
+            sections.append("## Summary\n")
+            sections.append("Task completed successfully. See the repository for full implementation details.")
+
+        # 2. Deployment links
         github_url = state.get("github_repo_url")
         vercel_preview = state.get("vercel_preview_url")
         vercel_claim = state.get("vercel_claim_url")
-        test_results = state.get("test_results", {})
 
         if github_url or vercel_preview:
-            deliverable_parts.append("\n\n---\n## Deployment")
+            sections.append("\n\n---\n## Deployment\n")
             if github_url:
-                deliverable_parts.append(f"**GitHub Repository:** {github_url}")
+                sections.append(f"- **GitHub Repository:** [{github_url}]({github_url})")
             if vercel_preview:
-                deliverable_parts.append(f"**Live Preview:** {vercel_preview}")
+                sections.append(f"- **Live Preview:** [{vercel_preview}]({vercel_preview})")
             if vercel_claim:
-                deliverable_parts.append(f"**Claim Deployment:** {vercel_claim}")
+                sections.append(f"- **Claim Deployment:** [{vercel_claim}]({vercel_claim})")
 
-        # Append test results summary
+        # 3. Test results (compact)
+        test_results = state.get("test_results", {})
         if test_results and test_results.get("summary"):
-            deliverable_parts.append("\n\n---\n## Test Results")
-            deliverable_parts.append(f"**Summary:** {test_results['summary']}")
+            sections.append("\n\n---\n## Test Results\n")
+            sections.append(f"**Summary:** {test_results['summary']}")
             for stage in ("lint", "typecheck", "tests", "build"):
                 key = f"{stage}_passed"
                 if test_results.get(key) is not None:
-                    status = "Passed" if test_results[key] else "Failed"
-                    deliverable_parts.append(f"- {stage.title()}: {status}")
+                    icon = "✅" if test_results[key] else "❌"
+                    sections.append(f"- {stage.title()}: {icon}")
 
-        # Append file manifest if files were created/modified
+        # 4. File manifest (capped at 50 to avoid bloat)
         files_created = state.get("files_created", [])
         files_modified = state.get("files_modified", [])
-        if files_created or files_modified:
-            deliverable_parts.append("\n\n---\n## Files Changed")
-            if files_created:
-                deliverable_parts.append("### Created")
-                for f in files_created:
-                    deliverable_parts.append(f"- `{f}`")
-            if files_modified:
-                deliverable_parts.append("### Modified")
-                for f in files_modified:
-                    deliverable_parts.append(f"- `{f}`")
+        total_files = len(files_created) + len(files_modified)
 
-        full_content = "\n".join(deliverable_parts)
+        if total_files > 0:
+            sections.append(f"\n\n---\n## Files Changed ({total_files} total)\n")
+            MAX_FILES_SHOWN = 50
+            shown = 0
+
+            if files_created:
+                sections.append("### Created")
+                for f in files_created[:MAX_FILES_SHOWN]:
+                    sections.append(f"- `{f}`")
+                    shown += 1
+
+            if files_modified and shown < MAX_FILES_SHOWN:
+                sections.append("### Modified")
+                remaining = MAX_FILES_SHOWN - shown
+                for f in files_modified[:remaining]:
+                    sections.append(f"- `{f}`")
+                    shown += 1
+
+            if total_files > MAX_FILES_SHOWN:
+                sections.append(f"\n*...and {total_files - MAX_FILES_SHOWN} more file(s)*")
+
+        # 5. Token usage stats (compact metadata)
+        prompt_tokens = state.get("total_prompt_tokens", 0)
+        completion_tokens = state.get("total_completion_tokens", 0)
+        if prompt_tokens or completion_tokens:
+            sections.append(f"\n\n---\n*Token usage: {prompt_tokens:,} prompt + {completion_tokens:,} completion = {prompt_tokens + completion_tokens:,} total*")
+
+        full_content = "\n".join(sections)
+
+        # Safety truncation (should rarely trigger with lean summaries)
         if len(full_content) > 450000:
-            logger.warning(f"Deliverable content too long ({len(full_content)} chars), truncating to 450k")
+            logger.warning("Deliverable content too long (%d chars), truncating to 450k", len(full_content))
             full_content = full_content[:450000] + "\n\n...[Content truncated due to length limits]"
+
+        logger.info("Delivering task %s — payload size: %d chars", task_id, len(full_content))
 
         result = await client.submit_deliverable(task_id, full_content)
         if result:

@@ -47,14 +47,16 @@ def generate_deliverable(task: dict) -> str:
     return llm_call(
         "You are a senior developer delivering high-quality work. "
         "Write clean, production-ready code with proper documentation. "
-        "Include all necessary imports, type hints, docstrings, and edge case handling.",
+        "Return a detailed summary of what you built, key architecture decisions, "
+        "and how to use the solution. Do NOT paste raw source code — the code "
+        "is already saved to workspace files. Focus on explaining the implementation.",
 
-        f"Complete this task and deliver the full implementation:\n\n"
+        f"Complete this task and deliver a quality summary:\n\n"
         f"## Task: {title}\n\n"
         f"## Description:\n{desc}\n\n"
         f"## Requirements:\n{reqs}\n\n"
-        "Deliver the complete solution with code and brief explanation.",
-        max_tokens=3000,
+        "Deliver a clear, detailed summary of the solution with key decisions explained.",
+        max_tokens=2000,
     )
 
 

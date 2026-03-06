@@ -436,7 +436,7 @@ async def execution_node(state: TaskState) -> dict[str, Any]:
         "files_created": files_created,
         "files_modified": files_modified,
         "commands_executed": commands,
-        "deliverable_content": result.get("deliverable_content", ""),
+        "deliverable_content": result.get("deliverable_summary", result.get("deliverable_content", "")),
         "total_prompt_tokens": state.get("total_prompt_tokens", 0) + result.get("prompt_tokens", 0),
         "total_completion_tokens": state.get("total_completion_tokens", 0) + result.get("completion_tokens", 0),
     }
@@ -494,7 +494,7 @@ async def complex_execution_node(state: TaskState) -> dict[str, Any]:
         "files_created": files_created,
         "files_modified": files_modified,
         "commands_executed": result.get("commands_executed", []),
-        "deliverable_content": result.get("deliverable_content", ""),
+        "deliverable_content": result.get("deliverable_summary", result.get("deliverable_content", "")),
         "total_prompt_tokens": state.get("total_prompt_tokens", 0) + result.get("prompt_tokens", 0),
         "total_completion_tokens": state.get("total_completion_tokens", 0) + result.get("completion_tokens", 0),
     }

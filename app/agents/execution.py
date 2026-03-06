@@ -31,7 +31,7 @@ class ExecutionAgent(BaseAgent):
         files_created (list[str]): New files created during execution.
         files_modified (list[str]): Existing files modified during execution.
         commands_executed (list[dict]): Commands that were run.
-        deliverable_content (str): Summary of the deliverable.
+        deliverable_summary (str): High-quality summary of what was built.
     """
 
     def __init__(self, model_tier: str = ModelTier.DEFAULT.value) -> None:
@@ -81,7 +81,10 @@ class ExecutionAgent(BaseAgent):
             "After completing all subtasks, "
             "return a JSON object with:\n"
             "- subtask_results: array of {index, title, status, result, files_changed}\n"
-            "- deliverable_content: a summary of everything that was done\n"
+            "- deliverable_summary: a detailed, high-quality summary of what was built, "
+            "key architecture decisions, how to run/use the project, and any important notes. "
+            "Do NOT paste raw source code into this field — the code is already saved to the workspace files. "
+            "Focus on explaining the implementation, structure, and how everything fits together.\n"
             "- files_created: array of file paths created\n"
             "- files_modified: array of file paths modified\n\n"
             "Return ONLY valid JSON when you are done (no markdown fences)."
@@ -296,7 +299,7 @@ def _parse_execution_result(content: str, plan: list[dict[str, Any]]) -> dict[st
             }
             for i, s in enumerate(plan)
         ],
-        "deliverable_content": content[:2000],
+        "deliverable_summary": content[:2000],
         "files_created": [],
         "files_modified": [],
         "commands_executed": [],
