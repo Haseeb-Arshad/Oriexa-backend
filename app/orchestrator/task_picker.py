@@ -218,7 +218,20 @@ class TaskPickerDaemon:
 
         elif event == "claim.accepted":
             task_id = data.get("task_id") or data.get("taskId")
-            logger.info("Claim accepted for task %s — execution will proceed", task_id)
+            logger.info("Claim accepted for task %s — starting orchestration", task_id)
+            if task_id and self.pool.has_capacity():
+                # Check if we're already tracking this task
+                async with async_session() as session:
+                    result = await session.execute(
+                        select(OrchTaskExecution.id).where(
+                            OrchTaskExecution.oriexa_task_id == task_id,
+                            OrchTaskExecution.status.notin_(["failed", "completed"]),
+                        )
+                    )
+                    if not result.first():
+                        task_data = await self.client.get_task(task_id)
+                        if task_data:
+                            await self._start_accepted_task(task_data)
 
         elif event == "claim.rejected":
             task_id = data.get("task_id") or data.get("taskId")
@@ -307,6 +320,10 @@ class TaskPickerDaemon:
 
                 if self.pool.has_capacity():
                     await self._discover_and_claim_tasks()
+
+                # Also pick up tasks where our claims were accepted by the user
+                if self.pool.has_capacity():
+                    await self._discover_accepted_claims()
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -346,6 +363,120 @@ class TaskPickerDaemon:
                 continue
 
             await self._process_task(task_data)
+
+    async def _discover_accepted_claims(self) -> None:
+        """Find tasks where our claims were accepted and start orchestration.
+
+        When a user manually accepts an agent's claim via the frontend,
+        the task status changes to 'claimed' but the orchestrator doesn't
+        know about it. This method polls for accepted claims and starts
+        the graph for those tasks.
+        """
+        try:
+            result = await self.client._request("GET", "/agents/me/claims", params={"status": "accepted"})
+            claims = result if isinstance(result, list) else []
+        except Exception:
+            logger.debug("Could not fetch accepted claims")
+            return
+
+        if not claims:
+            return
+
+        # Get task IDs we're already tracking
+        async with async_session() as session:
+            tracked_result = await session.execute(
+                select(OrchTaskExecution.oriexa_task_id).where(
+                    OrchTaskExecution.status.notin_(["failed", "completed"])
+                )
+            )
+            tracked_ids = {row[0] for row in tracked_result.all()}
+
+        for claim in claims:
+            if not self.pool.has_capacity():
+                break
+
+            task_id = claim.get("task_id")
+            if not task_id or task_id in tracked_ids:
+                continue
+
+            # Fetch full task data and start orchestration
+            task_data = await self.client.get_task(task_id)
+            if task_data and task_data.get("status") == "claimed":
+                logger.info(
+                    "Discovered accepted claim for task %d — starting orchestration",
+                    task_id,
+                )
+                await self._start_accepted_task(task_data)
+
+    async def _start_accepted_task(self, task_data: dict[str, Any]) -> None:
+        """Start orchestration for a task where our claim was already accepted."""
+        task_id = task_data["id"]
+        budget = task_data.get("budget_credits", task_data.get("budgetCredits", 100))
+        thread_id = str(uuid.uuid4())
+
+        async with async_session() as session:
+            # Check for existing execution
+            result = await session.execute(
+                select(OrchTaskExecution).where(
+                    OrchTaskExecution.oriexa_task_id == task_id
+                )
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing is not None:
+                if existing.status != OrchTaskStatus.FAILED.value:
+                    logger.info(
+                        "Task %d execution %d already active (status=%s), skipping",
+                        task_id, existing.id, existing.status,
+                    )
+                    return
+                # Reset the failed record for a fresh retry
+                await session.execute(
+                    update(OrchTaskExecution)
+                    .where(OrchTaskExecution.id == existing.id)
+                    .values(
+                        status=OrchTaskStatus.PENDING.value,
+                        graph_thread_id=thread_id,
+                        task_snapshot=task_data,
+                        claimed_credits=budget,
+                        started_at=datetime.now(timezone.utc),
+                        completed_at=None,
+                        error_message=None,
+                        attempt_count=existing.attempt_count + 1,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.commit()
+                execution_id = existing.id
+            else:
+                execution = OrchTaskExecution(
+                    oriexa_task_id=task_id,
+                    status=OrchTaskStatus.PENDING.value,
+                    task_snapshot=task_data,
+                    graph_thread_id=thread_id,
+                    claimed_credits=budget,
+                    started_at=datetime.now(timezone.utc),
+                )
+                session.add(execution)
+                await session.commit()
+                await session.refresh(execution)
+                execution_id = execution.id
+
+        workspace = self.workspace_mgr.create(execution_id)
+
+        # Store workspace path
+        async with async_session() as session:
+            await session.execute(
+                update(OrchTaskExecution)
+                .where(OrchTaskExecution.id == execution_id)
+                .values(workspace_path=str(workspace))
+            )
+            await session.commit()
+
+        logger.info("Starting orchestration for accepted task %d -> execution %d", task_id, execution_id)
+
+        coro = self._run_graph(execution_id, task_id, task_data, thread_id, str(workspace))
+        await self.pool.submit(coro, execution_id)
 
     async def _process_task(self, task_data: dict[str, Any]) -> None:
         """Claim a task and start the orchestrator graph."""

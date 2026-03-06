@@ -593,6 +593,8 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
     progress_tracker.add_step(eid, "deployment", "github",
         detail="Creating GitHub repository and pushing code")
 
+    import uuid as _uuid
+
     task_title = task_data.get("title", "delivery")
     # Slugify the title
     title_slug = task_title.lower()[:40]
@@ -600,7 +602,9 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
     title_slug = "".join(c for c in title_slug if c.isalnum() or c == "-")
     title_slug = title_slug.strip("-")
 
-    repo_name = f"{settings.GITHUB_REPO_PREFIX}-{execution_id}-{title_slug}"
+    # UUID suffix prevents name conflicts when tasks have similar titles
+    uuid_suffix = _uuid.uuid4().hex[:8]
+    repo_name = f"{settings.GITHUB_REPO_PREFIX}-{execution_id}-{title_slug}-{uuid_suffix}"
     description = f"Oriexa delivery for: {task_title}"
 
     try:
@@ -615,6 +619,37 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
             result["github_repo_url"] = gh_result["repo_url"]
             progress_tracker.add_step(eid, "deployment", "github",
                 detail=f"Repository created: {gh_result['repo_url']}")
+
+            # Verify repo actually has code (not empty)
+            try:
+                repo_url_path = gh_result["repo_url"].replace("https://github.com/", "")
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    verify_resp = await client.get(
+                        f"https://api.github.com/repos/{repo_url_path}/commits?per_page=1",
+                        headers={
+                            "Authorization": f"Bearer {settings.GITHUB_TOKEN}",
+                            "Accept": "application/vnd.github+json",
+                        },
+                    )
+                    if verify_resp.status_code == 200:
+                        commits = verify_resp.json()
+                        if not commits:
+                            logger.warning("Repo %s exists but has NO commits — retrying push", repo_name)
+                            progress_tracker.add_step(eid, "deployment", "github",
+                                detail="Repo exists but empty — retrying push...")
+                            # Retry push
+                            from app.tools.deployment import create_github_repo as _retry_gh
+                            await _retry_gh(repo_name, description, workspace_path)
+                        else:
+                            logger.info("Verified: repo %s has %d commit(s)", repo_name, len(commits))
+                    elif verify_resp.status_code == 409:
+                        # 409 = empty repo, push again
+                        logger.warning("Repo %s is empty (409) — retrying push", repo_name)
+                        from app.sandbox.executor import SandboxExecutor
+                        executor = SandboxExecutor(timeout=30)
+                        await executor.execute("git push -u origin main --force", cwd=workspace_path)
+            except Exception as verify_exc:
+                logger.warning("Post-push verification failed (non-blocking): %s", verify_exc)
         else:
             error_msg = gh_result.get("error", "unknown error")
             logger.error("GitHub repo creation failed: %s", error_msg)
@@ -749,7 +784,9 @@ async def failed_node(state: TaskState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def route_after_triage(state: TaskState) -> str:
-    if state.get("needs_clarification", False):
+    # Skip clarification for highly clear tasks (saves an LLM round-trip)
+    clarity = state.get("clarity_score", 0.5)
+    if state.get("needs_clarification", False) and clarity < 0.85:
         return "clarification"
     return "planning"
 
@@ -772,7 +809,10 @@ def route_after_review(state: TaskState) -> str:
     if state.get("review_passed", False):
         return "deployment"
     attempt = state.get("attempt_count", 0)
-    max_attempts = state.get("max_attempts", 3)
+    # Low-complexity tasks get fewer retry attempts to save time
+    complexity = state.get("complexity", "medium")
+    default_max = 2 if complexity == "low" else 3
+    max_attempts = state.get("max_attempts", default_max)
     if attempt < max_attempts:
         return "planning"
     return "failed"

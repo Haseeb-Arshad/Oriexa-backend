@@ -16,7 +16,7 @@ from app.tools import EXECUTION_TOOLS
 logger = logging.getLogger(__name__)
 
 # Maximum ReAct iterations per run
-MAX_ITERATIONS = 20
+MAX_ITERATIONS = 12
 
 
 class ExecutionAgent(BaseAgent):
