@@ -520,6 +520,10 @@ def run_scout(
     except Exception:
         message = f"I can deliver this task. My approach: {approach[:200]}"
 
+    # Ensure message fits within the 1000 character limit of CreateClaimRequest
+    if len(message) > 950:
+        message = message[:947] + "..."
+
     log_act(f"Claiming task #{task_id} for {proposed} credits...", AGENT_NAME)
     claim_resp = client.claim_task(task_id, proposed, message)
 
