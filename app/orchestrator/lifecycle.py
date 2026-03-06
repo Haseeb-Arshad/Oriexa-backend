@@ -65,6 +65,9 @@ async def deliver_task(state: dict[str, Any]) -> dict[str, Any]:
                     deliverable_parts.append(f"- `{f}`")
 
         full_content = "\n".join(deliverable_parts)
+        if len(full_content) > 450000:
+            logger.warning(f"Deliverable content too long ({len(full_content)} chars), truncating to 450k")
+            full_content = full_content[:450000] + "\n\n...[Content truncated due to length limits]"
 
         result = await client.submit_deliverable(task_id, full_content)
         if result:

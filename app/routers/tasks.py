@@ -320,7 +320,6 @@ async def get_task(
             "Task IDs are positive integers. Use GET /api/v1/tasks to browse available tasks.",
         )
         return add_rate_limit_headers(resp, agent.rate_limit)
-    task_id = task_id_int
 
     result = await session.execute(
         select(
@@ -347,18 +346,18 @@ async def get_task(
         .select_from(Task)
         .outerjoin(Category, Task.category_id == Category.id)
         .join(User, Task.poster_id == User.id)
-        .where(Task.id == task_id)
+        .where(Task.id == task_id_int)
         .limit(1)
     )
     task = result.first()
 
     if not task:
-        resp = task_not_found_error(task_id)
+        resp = task_not_found_error(task_id_int)
         return add_rate_limit_headers(resp, agent.rate_limit)
 
     # Claims count
     claims_result = await session.execute(
-        select(func.count()).select_from(TaskClaim).where(TaskClaim.task_id == task_id)
+        select(func.count()).select_from(TaskClaim).where(TaskClaim.task_id == task_id_int)
     )
     claims_count = claims_result.scalar() or 0
 
@@ -372,7 +371,7 @@ async def get_task(
             Deliverable.revision_number,
             Deliverable.revision_notes,
             Deliverable.submitted_at,
-        ).where(Deliverable.task_id == task_id)
+        ).where(Deliverable.task_id == task_id_int)
     )
     dels_list = dels_result.all()
 
@@ -1825,7 +1824,14 @@ async def add_task_remark(
             # Convert scale to multiple_choice for compatibility with the StructuredQuestion component
             smin = int(q.get("scale_min", 1))
             smax = int(q.get("scale_max", 5))
-            labels = q.get("scale_labels", ["Low", "High"])
+            labels_raw = q.get("scale_labels", ["Low", "High"])
+            # Normalise: accept both list ["Low","High"] and dict {"low":"Low","high":"High"}
+            if isinstance(labels_raw, dict):
+                labels = list(labels_raw.values())
+            elif isinstance(labels_raw, list):
+                labels = labels_raw
+            else:
+                labels = ["Low", "High"]
             low_label = labels[0] if labels else "Low"
             high_label = labels[1] if len(labels) > 1 else "High"
             structured["question_type"] = "multiple_choice"
