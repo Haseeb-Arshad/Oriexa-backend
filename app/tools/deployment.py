@@ -272,7 +272,7 @@ async def _deploy_via_vercel_cli(
 
     # Build
     build_result = await executor.execute(
-        f"{env_prefix} npx vercel build --prod --token={token}",
+        f"{env_prefix} npx vercel build --yes --prod --token={token}",
         cwd=workspace_path,
         timeout=120,
     )
@@ -287,7 +287,7 @@ async def _deploy_via_vercel_cli(
     else:
         # Deploy prebuilt
         deploy_result = await executor.execute(
-            f"{env_prefix} npx vercel deploy --prebuilt --prod --token={token}",
+            f"{env_prefix} npx vercel deploy --prebuilt --yes --prod --token={token}",
             cwd=workspace_path,
             timeout=120,
         )
