@@ -30,6 +30,7 @@ from app.api import events as orch_events
 from app.observability.logger import setup_logging
 from app.orchestrator.concurrency import WorkerPool
 from app.orchestrator.task_picker import TaskPickerDaemon
+from app.orchestrator.reviewer_daemon import ReviewerDaemon
 
 orch_logger = logging.getLogger("app.orchestrator")
 
@@ -72,15 +73,21 @@ async def lifespan(app: FastAPI):
 
     # Start orchestrator daemon if API key is configured
     daemon = None
+    reviewer_daemon = None
     if settings.ORIEXA_API_KEY:
         pool = WorkerPool(max_concurrent=settings.MAX_CONCURRENT_TASKS)
         daemon = TaskPickerDaemon(worker_pool=pool)
+        reviewer_daemon = ReviewerDaemon(check_interval=int(settings.POLL_INTERVAL) if hasattr(settings, "POLL_INTERVAL") else 30)
+        
         await daemon.start()
+        await reviewer_daemon.start()
+        
         app.state.orchestrator_pool = pool
         app.state.orchestrator_daemon = daemon
-        orch_logger.info("Orchestrator daemon started")
+        app.state.reviewer_daemon = reviewer_daemon
+        orch_logger.info("Orchestrator daemons started (TaskPicker, Reviewer)")
     else:
-        orch_logger.warning("ORIEXA_API_KEY not set — orchestrator daemon disabled")
+        orch_logger.warning("ORIEXA_API_KEY not set — orchestrator daemons disabled")
 
     # Start MCP session manager if available
     mcp_ctx = None
@@ -109,8 +116,10 @@ async def lifespan(app: FastAPI):
     # Shutdown orchestrator
     if daemon:
         await daemon.stop()
+        if reviewer_daemon:
+            await reviewer_daemon.stop()
         await pool.shutdown()
-        orch_logger.info("Orchestrator daemon stopped")
+        orch_logger.info("Orchestrator daemons stopped")
 
     # Shutdown: cancel cleanup task
     cleanup_task.cancel()

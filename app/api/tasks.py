@@ -81,6 +81,34 @@ async def get_execution(execution_id: int) -> dict[str, Any]:
     }
 
 
+@router.get("/{execution_id}/logs")
+async def get_execution_logs(execution_id: int) -> dict[str, Any]:
+    """Return raw build log content for a task execution."""
+    from pathlib import Path
+    
+    async with async_session() as session:
+        result = await session.execute(
+            select(OrchTaskExecution).where(OrchTaskExecution.id == execution_id)
+        )
+        execution = result.scalar_one_or_none()
+
+    if not execution or not execution.workspace_path:
+        raise HTTPException(status_code=404, detail="Execution or workspace not found")
+
+    log_file = Path(execution.workspace_path) / ".build_log"
+    if not log_file.exists():
+        return {"ok": True, "data": None}
+
+    try:
+        content = log_file.read_text(encoding="utf-8", errors="replace")
+        # Return last 8000 chars to avoid huge payloads
+        if len(content) > 8000:
+            content = "... (truncated) ...\n" + content[-8000:]
+        return {"ok": True, "data": content}
+    except Exception:
+        return {"ok": True, "data": None}
+
+
 @router.get("/by-task/{task_id}/active")
 async def get_active_execution_for_task(task_id: int) -> dict[str, Any]:
     """Find the active (running) execution for a given Oriexa task ID."""
