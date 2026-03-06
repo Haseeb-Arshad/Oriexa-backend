@@ -55,7 +55,6 @@ class ReviewerDaemon:
 
     async def _check_pending_reviews(self):
         """Query the DB directly for tasks that need review and dispatch them asynchronously."""
-        from app.db.models import OrchTask
         
         # We need tasks that are "delivered" and have "auto_review_enabled"
         async with async_session() as session:
