@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Fallback chain for CODING tier: glm-5 → minimax-m2.5 → gemini-3-flash → gpt-5.3-codex
     CODING_MODEL: str = "openrouter/z-ai/glm-5"
     CODING_STRONG_MODEL: str = "openrouter/openai/gpt-5.3-codex"
-    CODING_PLANNING_MODEL: str = "anthropic/claude-sonnet-4.6"
+    CODING_PLANNING_MODEL: str = "openrouter/anthropic/claude-opus-4-6"
     CODING_ALT_MODEL_1: str = "openrouter/minimax/minimax-m2.5"
     CODING_ALT_MODEL_2: str = "openrouter/google/gemini-3-flash-preview"
 

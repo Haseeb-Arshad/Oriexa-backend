@@ -92,3 +92,6 @@ class TaskState(TypedDict, total=False):
 
     # Messages exchanged with poster
     messages: list[dict[str, Any]]
+
+    # Live messages injected during execution
+    user_live_messages: list[dict[str, Any]]

@@ -77,7 +77,8 @@ class ExecutionAgent(BaseAgent):
             )
 
         execution_prompt += (
-            "\nExecute each subtask in order. After completing all subtasks, "
+            "\nExecute each subtask in order. As you work, if the user sends you a live message asking for an update or giving new instructions, you MUST reply back occasionally using the `send_chat_message` tool. You can also use it to proactively provide progress updates.\n\n"
+            "After completing all subtasks, "
             "return a JSON object with:\n"
             "- subtask_results: array of {index, title, status, result, files_changed}\n"
             "- deliverable_content: a summary of everything that was done\n"
@@ -96,7 +97,20 @@ class ExecutionAgent(BaseAgent):
         commands_executed: list[dict[str, Any]] = []
 
         # ReAct loop
+        last_processed_msg_index = 0
+
         for iteration in range(MAX_ITERATIONS):
+            # Check for new live messages from the user since last iteration
+            live_msgs = state.get("user_live_messages", [])
+            if len(live_msgs) > last_processed_msg_index:
+                new_msgs = live_msgs[last_processed_msg_index:]
+                for msg in new_msgs:
+                    messages.append(HumanMessage(content=(
+                        f"[SYSTEM ALERT: The user just sent this message during your execution: '{msg['content']}']\n"
+                        "Please acknowledge this message or adjust your actions accordingly."
+                    )))
+                last_processed_msg_index = len(live_msgs)
+
             response = await model_with_tools.ainvoke(messages)
             self.track_tokens(response)
             messages.append(response)
@@ -120,6 +134,10 @@ class ExecutionAgent(BaseAgent):
                     "lint_code",
                 ):
                     tool_args["workspace_path"] = workspace_path
+
+                # Inject execution_id/oriexa_task_id where needed
+                if tool_name == "send_chat_message":
+                    tool_args["oriexa_task_id"] = state.get("oriexa_task_id")
 
                 # Execute the tool
                 tool_fn = _get_tool_by_name(tool_name)

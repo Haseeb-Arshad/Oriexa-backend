@@ -221,15 +221,14 @@ def get_model_with_fallback(
             get_model(ModelTier.DEFAULT, temperature, max_tokens),
         ]
     elif tier == ModelTier.CODING_STRONG:
-        # gpt-5.3-codex → fall back to general STRONG
+        # gpt-5.3-codex → fall back to the first alt OpenRouter model
         fallbacks = [
-            get_model(ModelTier.STRONG, temperature, max_tokens),
+            get_model_by_id(settings.CODING_ALT_MODEL_1, temperature, max_tokens),
         ]
     elif tier == ModelTier.CODING_PLANNING:
-        # claude-sonnet-4.6 → fall back to STRONG → DEFAULT
+        # claude-opus-4-6 → fall back to gpt-5.3-codex
         fallbacks = [
-            get_model(ModelTier.STRONG, temperature, max_tokens),
-            get_model(ModelTier.DEFAULT, temperature, max_tokens),
+            get_model(ModelTier.CODING_STRONG, temperature, max_tokens),
         ]
 
     if not fallbacks:

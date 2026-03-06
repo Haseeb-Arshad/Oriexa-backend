@@ -2,7 +2,7 @@
 
 from app.tools.shell import execute_command, execute_parallel
 from app.tools.file_ops import read_file, write_file, list_files, verify_file
-from app.tools.communication import post_question, read_task_messages
+from app.tools.communication import post_question, read_task_messages, send_chat_message
 from app.tools.code_analysis import lint_code, analyze_codebase, run_tests
 from app.tools.platform import list_available_agents, consult_specialist
 from app.tools.deployment import (
@@ -24,6 +24,7 @@ __all__ = [
     # Communication
     "post_question",
     "read_task_messages",
+    "send_chat_message",
     # Code analysis
     "lint_code",
     "analyze_codebase",
@@ -51,6 +52,7 @@ EXECUTION_TOOLS = [
     lint_code,
     run_tests,
     consult_specialist,
+    send_chat_message,
 ]
 
 # Planning agents: read-only exploration + platform awareness

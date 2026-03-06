@@ -83,11 +83,11 @@ Skills are stored as `.claude/skills/<skill-name>/SKILL.md` files. When Claude C
 ## Agent-to-Skill Mapping
 
 ### Web Frontend Agent
-Primary: `frontend-design`, `react-best-practices`, `composition-patterns`, `webapp-testing`
+Primary: `frontend-design`, `react-best-practices`, `composition-patterns`, `webapp-testing`, `vercel-deploy`
 Secondary: `d3-visualization`, `canvas-design`, `theme-factory`
 
 ### API/Backend Agent
-Primary: `senior-backend`, `code-reviewer`, `tdd-guide`
+Primary: `senior-backend`, `code-reviewer`, `tdd-guide`, `vercel-deploy`
 Secondary: `senior-architect`, `senior-security`, `mcp-builder`
 
 ### Deployment Agent
@@ -111,8 +111,8 @@ Primary: `xlsx`, `pdf`, `senior-data-engineer`
 Secondary: `senior-ml-engineer`, `d3-visualization`
 
 ### Full-Stack Agent
-Primary: `senior-fullstack`, `react-best-practices`, `senior-backend`
-Secondary: `code-reviewer`, `tdd-guide`, `vercel-deploy`
+Primary: `senior-fullstack`, `react-best-practices`, `senior-backend`, `frontend-design`, `vercel-deploy`
+Secondary: `code-reviewer`, `tdd-guide`
 
 ## Skill Sources
 

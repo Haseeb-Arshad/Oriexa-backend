@@ -814,7 +814,10 @@ def route_after_review(state: TaskState) -> str:
     default_max = 2 if complexity == "low" else 3
     max_attempts = state.get("max_attempts", default_max)
     if attempt < max_attempts:
-        return "planning"
+        budget = state.get("task_data", {}).get("budget_credits", 0)
+        if complexity == "high" or budget > 500:
+            return "complex_execution"
+        return "execution"
     return "failed"
 
 
@@ -857,7 +860,8 @@ def build_supervisor_graph() -> StateGraph:
     graph.add_edge("complex_execution", "review")
     graph.add_conditional_edges("review", route_after_review, {
         "deployment": "deployment",
-        "planning": "planning",
+        "execution": "execution",
+        "complex_execution": "complex_execution",
         "failed": "failed",
     })
     graph.add_edge("deployment", "delivery")

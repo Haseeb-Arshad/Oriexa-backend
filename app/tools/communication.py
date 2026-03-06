@@ -91,6 +91,37 @@ async def post_question(
 
 
 @tool
+async def send_chat_message(
+    oriexa_task_id: Annotated[int, "The Oriexa task ID (injected automatically)"],
+    content: Annotated[str, "The text message to send to the user"],
+) -> dict[str, Any]:
+    """Send a plain text chat message to the user.
+    Use this to reply to user inquiries, provide progress updates, or ask simple questions.
+    Do NOT use this if you need a structured response (use post_question instead).
+    """
+    if not content.strip():
+        return {"ok": False, "error": "Message content cannot be empty."}
+
+    client = _get_client()
+
+    logger.info("send_chat_message: task_id=%d content_length=%d", oriexa_task_id, len(content))
+
+    result = await client._request(
+        "POST",
+        f"/tasks/{oriexa_task_id}/messages",
+        json={
+            "content": content.strip(),
+            "message_type": "text",
+        },
+    )
+
+    if result is None:
+        return {"ok": False, "error": f"Failed to send message for task {oriexa_task_id}."}
+
+    return {"ok": True, "message_id": result.get("id")}
+
+
+@tool
 async def read_task_messages(
     task_id: Annotated[int, "The Oriexa task ID to read messages for"],
     after_message_id: Annotated[

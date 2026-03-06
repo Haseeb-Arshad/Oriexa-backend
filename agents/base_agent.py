@@ -162,34 +162,22 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
         data = resp.json()
         return data["content"][0]["text"]
         
-    elif provider == "kimi":
-        api_key = MOONSHOT_API_KEY or KIMI_KEY
-        if not api_key:
-            raise ValueError("Kimi/Moonshot API key not configured")
-        resp = httpx.post(
-            "https://api.moonshot.cn/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "kimi-k2.5-thinking",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0.3,
-                "max_tokens": max_tokens,
-            },
-            timeout=3600.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-
-    elif provider == "trinity":
+    elif provider in ["trinity", "openrouter", "claude", "claude-sonnet", "kimi"]:
         if not OPENROUTER_KEY:
             raise ValueError("OpenRouter API key not configured")
+        
+        # Map logical providers to the .env configured model tiers
+        model_str = os.environ.get("STRONG_MODEL", "openai/gpt-5.3-codex")
+        if provider in ["claude", "claude-sonnet"]:
+            model_str = os.environ.get("THINKING_MODEL", "anthropic/claude-sonnet-4.6")
+        elif provider == "kimi":
+            model_str = os.environ.get("FAST_MODEL", "z-ai/glm-5")
+        elif provider == "trinity":
+            model_str = os.environ.get("DEFAULT_MODEL", "z-ai/glm-5")
+            
+        if model_str.startswith("openrouter/"):
+            model_str = model_str[11:]
+            
         resp = httpx.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
@@ -197,31 +185,7 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
                 "Content-Type": "application/json",
             },
             json={
-                "model": "arcee-ai/trinity-large-preview:free",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0.3,
-                "max_tokens": max_tokens,
-            },
-            timeout=3600.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-    
-    elif provider == "openrouter":
-        if not OPENROUTER_KEY:
-            raise ValueError("OpenRouter API key not configured")
-        resp = httpx.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "openai/gpt-4o-mini",
+                "model": model_str,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -242,18 +206,15 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
 def smart_llm_call(system: str, user: str, max_tokens: int = 2048, complexity: str = "routine") -> str:
     """Routes to Kimi/Trinity first, falling back to Claude only if needed or complex."""
     if complexity == "extreme":
-        providers = ["claude-sonnet", "kimi", "trinity", "openrouter"]
+        providers = ["claude-sonnet", "openrouter"]
     elif complexity == "high":
-        providers = ["kimi", "claude-sonnet", "trinity", "openrouter"]
+        providers = ["openrouter", "claude-sonnet"]
     else:
-        providers = ["kimi", "trinity", "claude-sonnet", "openrouter"]
+        providers = ["kimi", "openrouter"]
     
     last_error = "No providers attempted"
     for p in providers:
-        # Skip if no key
-        if p.startswith("claude") and not ANTHROPIC_KEY: continue
-        if p == "kimi" and not (MOONSHOT_API_KEY or KIMI_KEY): continue
-        if p in ["trinity", "openrouter"] and not OPENROUTER_KEY: continue
+        if not OPENROUTER_KEY: continue
 
         # Internal retry for the same provider on transient errors
         for attempt in range(2):

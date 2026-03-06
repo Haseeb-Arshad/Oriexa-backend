@@ -98,6 +98,7 @@ WEBHOOK_EVENTS = [
     "claim.rejected",
     "deliverable.accepted",
     "deliverable.revision_requested",
+    "message.created",
 ]
 
 
@@ -252,6 +253,17 @@ class TaskPickerDaemon:
             if task_id:
                 await self._mark_task_completed(task_id)
 
+        elif event == "message.created":
+            task_id = data.get("task_id") or data.get("taskId")
+            msg_content = data.get("content")
+            sender_id = data.get("sender_id")
+            
+            # Ensure it's not the agent's own message bouncing back
+            # Usually we'd check sender_id != agent_id, but here we'll just check if it's running
+            if task_id and msg_content:
+                logger.info("New message received for task %s, attempting to inject into execution", task_id)
+                await self._inject_chat_message(task_id, msg_content)
+
     async def _handle_revision_request(self, task_id: int, revision_notes: str) -> None:
         """Re-run the graph for a task that received revision feedback."""
         async with async_session() as session:
@@ -262,26 +274,81 @@ class TaskPickerDaemon:
             )
             execution = result.scalar_one_or_none()
 
-        if not execution:
-            logger.warning("No execution found for task %d revision", task_id)
+            if not execution:
+                logger.warning("No execution found for task %d revision", task_id)
+                return
+
+            # Reset status to pending so it can be picked up, or start it immediately 
+            # We'll re-start it immediately here by creating a task.
+            task_data = await self.client.get_task(task_id)
+            if not task_data:
+                return
+                
+            # Make sure we generate a new thread ID so LangGraph State starts fresh but with feedback
+            thread_id = str(uuid.uuid4())
+            workspace = self.workspace_mgr.create(execution.id)
+
+            await session.execute(
+                update(OrchTaskExecution)
+                .where(OrchTaskExecution.id == execution.id)
+                .values(
+                    status=OrchTaskStatus.PENDING.value,
+                    graph_thread_id=thread_id,
+                    attempt_count=execution.attempt_count + 1,
+                    updated_at=datetime.now(timezone.utc)
+                )
+            )
+            await session.commit()
+            
+            # Explicitly clear out old variables and pass revision notes
+            coro = self._run_graph(
+                execution.id, task_id, task_data, thread_id, str(workspace),
+                review_feedback=revision_notes,
+                attempt_count=execution.attempt_count + 1,
+            )
+            await self.pool.submit(coro, execution.id)
+
+    async def _inject_chat_message(self, task_id: int, content: str) -> None:
+        """Inject a live user chat message into the active LangGraph thread.
+        This updates the thread state immediately so the executing agent can see it.
+        """
+        async with async_session() as session:
+            result = await session.execute(
+                select(OrchTaskExecution).where(
+                    OrchTaskExecution.oriexa_task_id == task_id,
+                    OrchTaskExecution.status == OrchTaskStatus.IN_PROGRESS.value
+                ).order_by(OrchTaskExecution.id.desc()).limit(1)
+            )
+            execution = result.scalar_one_or_none()
+            thread_id = execution.graph_thread_id if execution else None
+
+        if not thread_id:
+            logger.info("No in_progress execution found for task %d to inject message.", task_id)
             return
 
-        # Re-fetch task data and re-run with revision feedback
-        task_data = await self.client.get_task(task_id)
-        if not task_data:
-            return
-
-        thread_id = str(uuid.uuid4())
-        workspace = self.workspace_mgr.create(execution.id)
-
-        await self._update_execution_status(execution.id, OrchTaskStatus.PLANNING)
-
-        coro = self._run_graph(
-            execution.id, task_id, task_data, thread_id, str(workspace),
-            review_feedback=revision_notes,
-            attempt_count=execution.attempt_count,
-        )
-        await self.pool.submit(coro, execution.id)
+        from app.orchestrator.supervisor import build_supervisor_graph
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        
+        # We need to manually update the state
+        try:
+            async with AsyncSqliteSaver.from_conn_string("sqlite+aiosqlite:///oriexa.db") as checkpointer:
+                graph = build_supervisor_graph()
+                graph.checkpointer = checkpointer
+                
+                config = {"configurable": {"thread_id": thread_id}}
+                state = await graph.aget_state(config)
+                
+                if state and hasattr(state, "values"):
+                    current_messages = state.values.get("user_live_messages", [])
+                    new_messages = current_messages + [
+                        {"role": "user", "content": content, "timestamp": datetime.now(timezone.utc).isoformat()}
+                    ]
+                    
+                    # Update graph state with the new message list
+                    await graph.aupdate_state(config, {"user_live_messages": new_messages})
+                    logger.info("Injected chat message into task %d thread %s", task_id, thread_id)
+        except Exception as exc:
+            logger.warning("Failed to inject message into task %d thread: %s", task_id, exc)
 
     async def _mark_task_failed(self, task_id: int, reason: str) -> None:
         async with async_session() as session:
