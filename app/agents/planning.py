@@ -152,8 +152,18 @@ def _get_tool_by_name(name: str) -> Any | None:
     return tool_map.get(name)
 
 
-def _parse_plan(content: str) -> list[dict[str, Any]]:
+def _parse_plan(content: Any) -> list[dict[str, Any]]:
     """Extract the plan list from LLM response content."""
+    
+    # If the LLM wrapper already parsed it into a dict or list
+    if isinstance(content, dict) and "plan" in content:
+        return _validate_plan(content["plan"])
+    if isinstance(content, list):
+        return _validate_plan(content)
+
+    if not isinstance(content, str):
+        content = str(content)
+
     # Try direct JSON parse
     try:
         data = json.loads(content.strip())

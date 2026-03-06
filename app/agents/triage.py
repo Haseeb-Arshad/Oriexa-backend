@@ -1,9 +1,8 @@
 """TriageAgent — assesses task clarity, complexity, and whether clarification is needed."""
 
-from __future__ import annotations
-
 import json
 import logging
+import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -55,30 +54,49 @@ class TriageAgent(BaseAgent):
         self.record_action(response.content)
 
         # Parse structured output from the LLM response
+        content = response.content.strip() if isinstance(response.content, str) else str(response.content)
+
         try:
-            result = json.loads(response.content.strip())
+            result = json.loads(content)
         except json.JSONDecodeError:
-            # Attempt to extract JSON from markdown-fenced response
-            content = response.content.strip()
+            # Attempt to extract JSON from markdown-fenced response or arbitrary text block
             if "```json" in content:
                 content = content.split("```json", 1)[1]
                 content = content.split("```", 1)[0].strip()
             elif "```" in content:
                 content = content.split("```", 1)[1]
                 content = content.split("```", 1)[0].strip()
+            
             try:
                 result = json.loads(content)
             except json.JSONDecodeError:
-                logger.error(
-                    "TriageAgent: failed to parse LLM response as JSON: %s",
-                    response.content[:500],
-                )
-                result = {
-                    "clarity_score": 0.5,
-                    "complexity": "medium",
-                    "needs_clarification": True,
-                    "reasoning": "Unable to parse triage response; defaulting to clarification.",
-                }
+                # Fallback: find the first { ... } block via regex
+                match = re.search(r'\{.*\}', content, re.DOTALL)
+                if match:
+                    try:
+                        result = json.loads(match.group(0))
+                    except json.JSONDecodeError:
+                        logger.error(
+                            "TriageAgent: failed to parse ALL fallbacks as JSON: %s",
+                            response.content[:500],
+                        )
+                        result = {
+                            "clarity_score": 0.5,
+                            "complexity": "medium",
+                            "needs_clarification": True,
+                            "reasoning": "Unable to parse triage response; defaulting to clarification.",
+                        }
+                else:
+                    logger.error(
+                        "TriageAgent: failed to parse LLM response as JSON: %s",
+                        response.content[:500],
+                    )
+                    result = {
+                        "clarity_score": 0.5,
+                        "complexity": "medium",
+                        "needs_clarification": True,
+                        "reasoning": "Unable to parse triage response; defaulting to clarification.",
+                    }
 
         # Normalise and validate fields
         clarity_score = float(result.get("clarity_score", 0.5))

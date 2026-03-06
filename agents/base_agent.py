@@ -140,29 +140,7 @@ def write_progress(
 
 def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "kimi") -> str:
     """Multi-provider LLM call wrapper."""
-    if provider == "claude" or provider == "claude-sonnet":
-        # Use current 3.5 Sonnet model ID
-        model_id = "claude-3-5-sonnet-20240620"
-        resp = httpx.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": model_id,
-                "max_tokens": max_tokens,
-                "system": system,
-                "messages": [{"role": "user", "content": user}],
-            },
-            timeout=3600.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["content"][0]["text"]
-        
-    elif provider in ["trinity", "openrouter", "claude", "claude-sonnet", "kimi"]:
+    if provider in ["trinity", "openrouter", "claude", "claude-sonnet", "kimi", "openai"]:
         if not OPENROUTER_KEY:
             raise ValueError("OpenRouter API key not configured")
         
@@ -373,34 +351,17 @@ def kimi_enhance_prompt(prompt: str) -> str:
                   "If you encounter obstacles or past failures, you MUST be extremely proactive: resolve the issues whatever it takes, "
                   "even if it means changing the architecture, switching tools, or adopting a different approach to bypass the blocker.")
     try:
-        resp = httpx.post(
-            "https://api.moonshot.ai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "kimi-k2.5-thinking",
-                "messages": [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": f"Please enhance these raw requirements into a detailed architectural blueprint:\n\n{prompt}"},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 4000,
-            },
-            timeout=3600.0,
+        enhanced = llm_call(
+            sys_prompt, 
+            f"Please enhance these raw requirements into a detailed architectural blueprint:\n\n{prompt}", 
+            max_tokens=4000, 
+            provider="kimi"
         )
-        data = resp.json()
-        if "choices" in data and data["choices"]:
-            enhanced = data["choices"][0]["message"]["content"]
-            # Cap output to prevent Claude from generating oversized JSON
-            if len(enhanced) > 3000:
-                log_warn(f"Kimi blueprint was {len(enhanced)} chars — trimming to 3000", "Kimi")
-                enhanced = enhanced[:3000] + "\n\n[Blueprint truncated for token safety]"
-            return enhanced
-        else:
-            log_warn(f"Moonshot Direct API failed, falling back to Trinity: {data}")
-            return trinity_enhance_prompt(prompt)
+        if len(enhanced) > 3000:
+            log_warn(f"Kimi blueprint was {len(enhanced)} chars — trimming to 3000", "Kimi")
+            enhanced = enhanced[:3000] + "\n\n[Blueprint truncated for token safety]"
+        return enhanced
+
     except Exception as e:
         log_err(f"Moonshot Direct API failed: {e}. Falling back to Trinity.")
         return trinity_enhance_prompt(prompt)
@@ -440,29 +401,13 @@ def trinity_enhance_prompt(prompt: str) -> str:
                   "If you encounter obstacles or past failures, you MUST be extremely proactive: resolve the issues whatever it takes, "
                   "even if it means changing the architecture, switching tools, or adopting a different approach to bypass the blocker.")
     try:
-        resp = httpx.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "arcee-ai/trinity-large-preview:free",
-                "messages": [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 10000,
-            },
-            timeout=3600.0,
+        enhanced = llm_call(
+            sys_prompt, 
+            prompt, 
+            max_tokens=10000, 
+            provider="trinity"
         )
-        data = resp.json()
-        if "choices" in data and data["choices"]:
-            return data["choices"][0]["message"]["content"]
-        else:
-            log_warn(f"Trinity Free API failure: {data}")
-            return openrouter_enhance_prompt(prompt)
+        return enhanced
     except Exception as e:
         log_err(f"Trinity enhancement failed: {e}")
         return openrouter_enhance_prompt(prompt)
