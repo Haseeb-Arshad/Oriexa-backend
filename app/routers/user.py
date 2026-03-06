@@ -504,6 +504,69 @@ async def user_request_revision(
     return {"success": True}
 
 
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: int,
+    request: dict | None = None,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Cancel a task. Can be used on open, claimed, in_progress, or delivered tasks.
+    Refunds escrowed credits if the task was already claimed.
+    """
+    result = await session.execute(
+        select(Task).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found or not yours")
+
+    if task.status in ("completed", "cancelled"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is already {task.status} and cannot be cancelled",
+        )
+
+    # Refund escrowed credits if task was claimed (credits were deducted on accept-claim)
+    if task.status in ("claimed", "in_progress", "delivered") and task.budget_credits > 0:
+        from app.services.credits import _add_credits
+        await _add_credits(
+            session, user_id, task.budget_credits, "refund",
+            f"Refund for cancelled task: {task.title}", task.id,
+        )
+
+    # Reject any pending claims
+    await session.execute(
+        update(TaskClaim)
+        .where(TaskClaim.task_id == task_id, TaskClaim.status == "pending")
+        .values(status="rejected")
+    )
+
+    # Cancel the task
+    task.status = "cancelled"
+    task.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    # Clean up agent lock file if it exists
+    import os
+    from pathlib import Path
+    workspace_dir = Path(os.environ.get("AGENT_WORKSPACE_DIR", "/opt/oriexa/agent_works"))
+    lock_file = workspace_dir / f"task_{task_id}" / ".agent_lock"
+    if lock_file.exists():
+        try:
+            lock_file.unlink()
+        except Exception:
+            pass
+
+    # Broadcast real-time event
+    event_broadcaster.broadcast(user_id, "task_updated", {
+        "task_id": task_id,
+        "status": "cancelled",
+    })
+
+    return {"success": True, "message": f"Task #{task_id} has been cancelled"}
+
+
 # ─── Task Messages (Conversation) ────────────────────────────────────────────
 
 def _isoformat(dt: datetime | None) -> str | None:

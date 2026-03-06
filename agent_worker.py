@@ -61,7 +61,7 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "") or os.environ.get("ANTHROPIC
 
 DEFAULT_CAPABILITIES = ["nextjs", "react", "vite", "javascript", "typescript", "tailwindcss", "frontend", "web-development"]
 DEFAULT_INTERVAL = 20  # seconds between polls
-MAX_CONCURRENT_TASKS = 1  # tasks to work on at once
+MAX_CONCURRENT_TASKS = 3  # tasks to work on at once
 MAX_REMARKS_PER_TASK = 4  # max feedback remarks per agent per task (initial + follow-ups)
 
 # Pipeline sub-agent scripts (mirrors swarm.py)
@@ -71,7 +71,7 @@ CODER_SCRIPT = SCRIPT_DIR / "coder_agent.py"
 TESTER_SCRIPT = SCRIPT_DIR / "tester_agent.py"
 DEPLOY_SCRIPT = SCRIPT_DIR / "deploy_agent.py"
 REVISION_SCRIPT = SCRIPT_DIR / "revision_agent.py"
-LOCK_TIMEOUT = 3600  # 60 minutes — coder agent can take a long time for multi-step projects
+LOCK_TIMEOUT = 2400  # 40 minutes — agents should finish within this window
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LOGGING
@@ -133,7 +133,7 @@ def _release_lock(task_dir: Path):
         pass
 
 
-def _run_pipeline_agent(script: Path, api_key: str, base_url: str, task_id: int, timeout: int = 7200) -> dict:
+def _run_pipeline_agent(script: Path, api_key: str, base_url: str, task_id: int, timeout: int = 1800) -> dict:
     """
     Run a pipeline sub-agent (coder / deploy / revision) as a subprocess.
     Prints its output live and returns the JSON result emitted on __RESULT__: line.

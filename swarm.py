@@ -54,7 +54,7 @@ from agents.base_agent import (
 # ═══════════════════════════════════════════════════════════════════════════
 
 DEFAULT_INTERVAL = 10    # seconds between orchestrator ticks
-MAX_CONCURRENT_TASKS = 1 # how many tasks to work on simultaneously
+MAX_CONCURRENT_TASKS = 3 # how many tasks to work on simultaneously
 
 ORCH = "Orchestrator"
 
@@ -66,7 +66,7 @@ TESTER_SCRIPT = SCRIPT_DIR / "tester_agent.py"
 DEPLOY_SCRIPT = SCRIPT_DIR / "deploy_agent.py"
 REVISION_SCRIPT = SCRIPT_DIR / "revision_agent.py"
 WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent / "agent_works")))
-LOCK_TIMEOUT = 3600  # 60 minutes — coder agent can take a long time for multi-step projects
+LOCK_TIMEOUT = 2400  # 40 minutes — agents should finish within this window
 
 
 def acquire_lock(task_dir: Path, agent_name: str) -> bool:
@@ -127,7 +127,7 @@ def run_sub_agent(
     api_key: str,
     base_url: str,
     extra_args: list[str] | None = None,
-    timeout: int = 7200,
+    timeout: int = 1800,
 ) -> dict:
     """
     Run a sub-agent as a subprocess and capture its result.
