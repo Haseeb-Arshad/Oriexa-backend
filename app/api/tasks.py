@@ -91,9 +91,10 @@ async def get_active_execution_for_task(task_id: int) -> dict[str, Any]:
             select(OrchTaskExecution)
             .where(
                 OrchTaskExecution.oriexa_task_id == task_id,
+                # Include completed so frontend can still display execution history
                 OrchTaskExecution.status.in_([
                     "pending", "claiming", "clarifying", "planning",
-                    "executing", "reviewing", "delivering",
+                    "executing", "reviewing", "delivering", "completed",
                 ]),
             )
             .order_by(OrchTaskExecution.id.desc())
