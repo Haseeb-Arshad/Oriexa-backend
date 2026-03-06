@@ -491,7 +491,7 @@ class TaskPickerDaemon:
             existing = result.scalar_one_or_none()
 
             if existing is not None:
-                if existing.status != OrchTaskStatus.FAILED.value:
+                if existing.status not in (OrchTaskStatus.FAILED.value, OrchTaskStatus.CLAIMING.value):
                     logger.info(
                         "Task %d execution %d already active (status=%s), skipping",
                         task_id, existing.id, existing.status,
@@ -572,20 +572,20 @@ class TaskPickerDaemon:
             existing = result.scalar_one_or_none()
 
             if existing is not None:
-                if existing.status != OrchTaskStatus.FAILED.value:
+                if existing.status not in (OrchTaskStatus.FAILED.value, OrchTaskStatus.CLAIMING.value):
                     # Already pending/in-progress — don't double-start
                     logger.info(
                         "Task %d execution %d already active (status=%s), skipping",
                         task_id, existing.id, existing.status,
                     )
                     return
-                # Reset the failed record for a fresh retry
-                logger.info("Retrying failed execution %d for task %d", existing.id, task_id)
+                # Reset the record to CLAIMING
+                logger.info("Retrying failed execution %d or claim %d", existing.id, task_id)
                 await session.execute(
                     update(OrchTaskExecution)
                     .where(OrchTaskExecution.id == existing.id)
                     .values(
-                        status=OrchTaskStatus.PENDING.value,
+                        status=OrchTaskStatus.CLAIMING.value,
                         graph_thread_id=thread_id,
                         task_snapshot=task_data,
                         claimed_credits=budget,
@@ -601,7 +601,7 @@ class TaskPickerDaemon:
             else:
                 execution = OrchTaskExecution(
                     oriexa_task_id=task_id,
-                    status=OrchTaskStatus.PENDING.value,
+                    status=OrchTaskStatus.CLAIMING.value,
                     task_snapshot=task_data,
                     graph_thread_id=thread_id,
                     claimed_credits=budget,
@@ -623,10 +623,8 @@ class TaskPickerDaemon:
             )
             await session.commit()
 
-        logger.info("Claimed task %d -> execution %d (budget=%d)", task_id, execution_id, budget)
-
-        coro = self._run_graph(execution_id, task_id, task_data, thread_id, str(workspace))
-        await self.pool.submit(coro, execution_id)
+        logger.info("Claimed task %d -> execution %d (budget=%d). Waiting for accepted claim.", task_id, execution_id, budget)
+        # We DO NOT start the graph here. We wait for `claim.accepted` webhook or `_discover_accepted_claims`.
 
     async def _run_graph(
         self,
