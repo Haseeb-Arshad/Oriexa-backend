@@ -146,19 +146,40 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 log_command(task_dir, "npm run build", build_rc, build_out)
 
                 if build_rc != 0:
-                    log_warn(f"Build FAILED (rc={build_rc}). Looping back to Coder.", AGENT_NAME)
-                    state["status"] = "coding"
-                    state["test_errors"] = (
-                        f"BUILD FAILED — fix these errors before tests can run:\n"
-                        f"{build_out[-2000:] if len(build_out) > 2000 else build_out}"
-                    )
-                    with open(state_file, "w") as f:
-                        import json as _json2; _json2.dump(state, f, indent=2)
-                    h = commit_step(task_dir, "build: FAILED — returning to coder")
-                    if h:
-                        append_commit_log(task_dir, h, "build: failed")
-                        push_to_remote(task_dir)
-                    return {"action": "tested", "task_id": task_id, "passed": False, "reason": "build_failed"}
+                    test_iteration = state.get("test_iteration", 0)
+                    MAX_TEST_RETRIES = 3
+
+                    if test_iteration >= MAX_TEST_RETRIES:
+                        log_warn(
+                            f"Build failed {test_iteration + 1} time(s). Max retries ({MAX_TEST_RETRIES}) reached. "
+                            f"Force-advancing to deployment — human reviewer will evaluate.",
+                            AGENT_NAME,
+                        )
+                        state["status"] = "deploying"
+                        state["test_errors"] = ""
+                        state["test_iteration"] = test_iteration + 1
+                        with open(state_file, "w") as f:
+                            import json as _json2; _json2.dump(state, f, indent=2)
+                        h = commit_step(task_dir, f"build: failed (attempt {test_iteration + 1}) — force-advancing to deploy")
+                        if h:
+                            append_commit_log(task_dir, h, "build: failed, force-advancing")
+                            push_to_remote(task_dir)
+                        return {"action": "tested", "task_id": task_id, "passed": False, "reason": "build_failed_max_retries", "forced": True}
+                    else:
+                        log_warn(f"Build FAILED (rc={build_rc}, attempt {test_iteration + 1}/{MAX_TEST_RETRIES}). Looping back to Coder for targeted fix.", AGENT_NAME)
+                        state["status"] = "coding"
+                        state["test_errors"] = (
+                            f"BUILD FAILED — fix these errors before tests can run:\n"
+                            f"{build_out[-2000:] if len(build_out) > 2000 else build_out}"
+                        )
+                        state["test_iteration"] = test_iteration + 1
+                        with open(state_file, "w") as f:
+                            import json as _json2; _json2.dump(state, f, indent=2)
+                        h = commit_step(task_dir, f"build: FAILED (attempt {test_iteration + 1}) — returning to coder")
+                        if h:
+                            append_commit_log(task_dir, h, "build: failed")
+                            push_to_remote(task_dir)
+                        return {"action": "tested", "task_id": task_id, "passed": False, "reason": "build_failed"}
                 else:
                     log_ok("Production build PASSED.", AGENT_NAME)
                     append_build_log(task_dir, "Build PASSED ✅")
@@ -224,20 +245,40 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
 
         else:
             limited_out = output[-2000:] if len(output) > 2000 else output
-            log_warn(f"Tests FAILED (exit code {rc}). Looping back to Coder.", AGENT_NAME)
-            write_progress(task_dir, task_id, "testing", "Tests failed — retrying",
-                           "Tests failed, returning to Coder agent to fix errors",
-                           limited_out[:500], 90.0, subtask_id=100,
-                           metadata={"exit_code": rc})
+            test_iteration = state.get("test_iteration", 0)
+            MAX_TEST_RETRIES = 3
 
-            state["status"] = "coding"  # Kick back to Coder
-            state["test_errors"] = f"Command: {test_command}\nExit code: {rc}\nOutput:\n{limited_out}"
+            if test_iteration >= MAX_TEST_RETRIES:
+                log_warn(
+                    f"Tests failed {test_iteration + 1} time(s). Max retries ({MAX_TEST_RETRIES}) reached. "
+                    f"Force-advancing to deployment — human reviewer will evaluate.",
+                    AGENT_NAME,
+                )
+                state["status"] = "deploying"
+                state["test_errors"] = ""
+                state["test_iteration"] = test_iteration + 1
 
-            h = commit_step(task_dir, f"test: failing — exit code {rc}")
-            if h:
-                append_commit_log(task_dir, h, f"test: failing (rc={rc})")
-                push_to_remote(task_dir)
-                log_ok(f"Failing test results committed [{h}] and pushed", AGENT_NAME)
+                h = commit_step(task_dir, f"test: failing (attempt {test_iteration + 1}) — force-advancing to deploy")
+                if h:
+                    append_commit_log(task_dir, h, "test: failing, force-advancing")
+                    push_to_remote(task_dir)
+
+            else:
+                log_warn(f"Tests FAILED (exit code {rc}, attempt {test_iteration + 1}/{MAX_TEST_RETRIES}). Looping back to Coder for targeted fix.", AGENT_NAME)
+                write_progress(task_dir, task_id, "testing", "Tests failed — retrying",
+                               "Tests failed, returning to Coder agent to fix errors",
+                               limited_out[:500], 90.0, subtask_id=100,
+                               metadata={"exit_code": rc})
+
+                state["status"] = "coding"
+                state["test_errors"] = f"Command: {test_command}\nExit code: {rc}\nOutput:\n{limited_out}"
+                state["test_iteration"] = test_iteration + 1
+
+                h = commit_step(task_dir, f"test: failing — exit code {rc}")
+                if h:
+                    append_commit_log(task_dir, h, f"test: failing (rc={rc})")
+                    push_to_remote(task_dir)
+                    log_ok(f"Failing test results committed [{h}] and pushed", AGENT_NAME)
 
         with open(state_file, "w") as f:
             json.dump(state, f, indent=2)

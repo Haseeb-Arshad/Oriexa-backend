@@ -122,10 +122,8 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         poster_section = f"\n\nPoster's Requirements & Answers:\n{poster_context}\n"
 
     system = (
-        "You are a Senior Software Architect planning an implementation. "
-        "Break the task into 3-6 ordered implementation steps. "
-        "Each step should be a logical unit of work (e.g. scaffold, config, "
-        "core logic, API routes, UI components, tests). "
+        "You are a world-class Software Architect AI agent. "
+        "Given a task, you break it into implementable steps with DETAILED descriptions. "
         "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n\n"
         "CRITICAL — PROJECT TYPE RULES (STRICTLY ENFORCED):\n"
         "- ALWAYS prioritize the latest versions of all technologies, frameworks, and tools.\n"
@@ -136,7 +134,8 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "landing pages, portfolios, e-commerce, SaaS, tools with a UI, APIs, backends — everything.\n"
         "- Use 'react' ONLY if the task explicitly says 'React without Next.js' or 'Vite + React'.\n"
         "- Use 'vite' ONLY if the task explicitly specifies Vite as the build tool.\n"
-        "- Use 'static' ONLY for pure HTML/CSS/JS with absolutely no framework needed.\n"
+        "- Use 'static' ONLY for pure HTML/CSS/JS with absolutely no framework needed "
+        "(e.g. the user asks for vanilla JS, plain HTML page, or a simple static site).\n"
         "- NEVER use 'python' — Python is FORBIDDEN as a project type.\n"
         "- NEVER use 'node' standalone — if backend is needed, use Next.js API routes.\n"
         "- Backend logic MUST live inside the framework (Next.js API routes, server actions).\n"
@@ -144,10 +143,24 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "- When in doubt: choose 'nextjs'. It is ALWAYS the safe default. The NEXTJS framework MUST be prioritized before you proceed with implementation.\n"
         "- For 'nextjs' always use scaffold_command: "
         "'npx create-next-app@latest ./ --typescript --tailwind --eslint --app --no-src-dir --import-alias @/* --yes --force'\n\n"
+        "CRITICAL — STEP DESCRIPTION RULES:\n"
+        "- Each step's 'description' MUST be a DETAILED paragraph (3-5 sentences minimum) "
+        "explaining exactly what to implement, the visual design, behavior, and any edge cases.\n"
+        "- For STATIC (vanilla HTML/CSS/JS) projects: describe the EXACT HTML structure, "
+        "CSS styling approach (colors, fonts, layout), JavaScript behavior (event handlers, "
+        "DOM manipulation), and how each file connects. The description must be detailed enough "
+        "that a developer could implement it without seeing the task requirements again.\n"
+        "- For NEXTJS / REACT projects: describe the component hierarchy, state management, "
+        "props, hooks to use, styling approach (Tailwind classes), responsive breakpoints, "
+        "animations, and API routes if needed. Each step must produce a COMPLETE, polished feature.\n"
+        "- NEVER have vague descriptions like 'Set up project'. Instead: 'Create the root layout "
+        "with Inter font, dark theme support, global CSS variables, and a responsive container'.\n\n"
         "CRITICAL — FILE LIST RULES:\n"
         "- Every step MUST list at least 2 files to create.\n"
-        "- Each file must have a 'path' (relative) and 'description' (what it does).\n"
+        "- Each file must have a 'path' (relative) and 'description' (detailed: what it renders, "
+        "what styles it applies, what interactivity it provides).\n"
         "- Be specific: e.g. 'app/page.tsx', 'components/Hero.tsx', 'app/api/data/route.ts'.\n"
+        "- For static projects: ALWAYS include 'index.html' as the main entry point.\n"
         "- NEVER leave the files array empty."
     )
 
@@ -165,11 +178,11 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         '  "steps": [\n'
         '    {\n'
         '      "step_number": 1,\n'
-        '      "description": "Set up project configuration",\n'
+        '      "description": "DETAILED PARAGRAPH describing exactly what to build, the visual design, behavior, and technical approach. At least 3-5 sentences.",\n'
         '      "commit_message": "chore: add project configuration",\n'
         '      "files": [\n'
-        '        {"path": "tsconfig.json", "description": "TypeScript config"},\n'
-        '        {"path": "app/layout.tsx", "description": "Root layout component"}\n'
+        '        {"path": "app/layout.tsx", "description": "Root layout with Inter font, dark theme, responsive container, and global metadata"},\n'
+        '        {"path": "app/page.tsx", "description": "Main page with hero section, feature cards, and call-to-action"}\n'
         '      ]\n'
         '  ],\n'
         '  "test_command": "npm run build"\n'
@@ -233,12 +246,24 @@ def generate_step_code(
         )
 
     system = (
-        "You are a Senior Fullstack Developer producing production-ready code. "
+        "You are a world-class Senior Fullstack Developer producing PRODUCTION-READY, "
+        "POLISHED, COMPLETE code. You write code that compiles and runs perfectly on first try.\n"
         "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n"
         "Your response must be a JSON object with a single 'files' array.\n"
-        "Each file has 'path' (relative) and 'content' (the full source code).\n"
-        "CRITICAL: Every file MUST have real, working code in 'content'. "
-        "NEVER return empty content or placeholder comments. Write complete, functional code."
+        "Each file has 'path' (relative) and 'content' (the COMPLETE, FULL source code).\n\n"
+        "QUALITY RULES (STRICTLY ENFORCED):\n"
+        "- Every file MUST have COMPLETE, REAL, WORKING code. NEVER return empty content.\n"
+        "- For HTML files: include DOCTYPE, full head section with meta, title, linked stylesheets, "
+        "and a complete body with semantic structure. The page must be visually appealing.\n"
+        "- For CSS files: include a full design system — colors, typography, spacing, responsive "
+        "breakpoints, hover effects, transitions. Make it look PROFESSIONAL, not bare-bones.\n"
+        "- For JS files: include complete logic with proper error handling, event listeners, "
+        "DOM manipulation, and comments explaining complex sections.\n"
+        "- For React/Next.js: use proper TypeScript types, 'use client' directive where needed, "
+        "proper imports, hooks, responsive Tailwind classes, and accessible HTML.\n"
+        "- NEVER use placeholder text like 'TODO' or 'Add your code here'. Write the actual code.\n"
+        "- NEVER import components or modules that don't exist in the project.\n"
+        "- All code must be SELF-CONTAINED and FUNCTIONAL — it should work immediately."
     )
     if skill_contents:
         system += "\n\nYOU MUST STRICTLY FOLLOW THESE CAPABILITY SKILLS:\n\n" + "\n\n---\n\n".join(skill_contents)
@@ -255,8 +280,12 @@ def generate_step_code(
         f"Architectural Blueprint:\n{blueprint[:3000]}\n\n"
         f"{existing_context}\n"
         f"Files to create in THIS step:\n{files_desc}\n\n"
-        "Return JSON: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n"
-        "IMPORTANT: Each file's 'content' MUST be complete, working source code. No placeholders."
+        "Return JSON: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n\n"
+        "IMPORTANT REMINDERS:\n"
+        "- Each file's 'content' MUST be complete, working source code — NOT fragments.\n"
+        "- For static projects: HTML must be a full valid document with linked CSS/JS.\n"
+        "- For Next.js/React: components must compile cleanly with proper imports and types.\n"
+        "- Write code that a developer would be PROUD to ship. Quality over speed."
     )
 
     # First attempt
@@ -392,6 +421,106 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# FIX-ONLY MODE — Targeted error repair (no full re-gen)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _fix_build_errors(
+    error_output: str,
+    title: str,
+    desc: str,
+    reqs: str,
+    blueprint: str,
+    existing_files: list[str],
+    skill_contents: list[str],
+    poster_context: str,
+    task_dir: Path,
+    complexity: str = "high",
+) -> list[dict]:
+    """
+    Given build/test error output, generate ONLY the fixed files.
+    Reads the current broken files from disk, sends them + errors to the LLM,
+    and gets back corrected versions. Does NOT regenerate files without errors.
+    """
+    import re
+
+    # Extract file paths mentioned in the error output
+    error_files: set[str] = set()
+    # Match common error patterns: "./app/page.tsx(12,5):" or "Error in app/page.tsx" or "./app/page.tsx:12:5"
+    for pattern in [
+        r'[./]*([a-zA-Z0-9_/.-]+\.[a-zA-Z]+)\s*[\(:]\d+',    # file.tsx(12,5) or file.tsx:12:5
+        r'Error.*?[./]*([a-zA-Z0-9_/.-]+\.[a-zA-Z]+)',        # Error in file.tsx
+        r"Module not found.*?'([^']+)'",                       # Module not found: './something'
+    ]:
+        for match in re.finditer(pattern, error_output):
+            fpath = match.group(1).lstrip('./')
+            if fpath and not fpath.startswith('node_modules') and '.' in fpath:
+                error_files.add(fpath)
+
+    if not error_files:
+        # Fallback: if we can't parse specific files, fix the main entry points
+        for candidate in ["app/page.tsx", "app/layout.tsx", "pages/index.tsx"]:
+            if (task_dir / candidate).exists():
+                error_files.add(candidate)
+
+    if not error_files:
+        log_warn("Could not identify broken files from error output", AGENT_NAME)
+        return []
+
+    log_think(f"Fix-only: targeting {len(error_files)} file(s): {', '.join(list(error_files)[:8])}", AGENT_NAME)
+
+    # Read current content of broken files
+    file_contents = {}
+    for fpath in error_files:
+        full_path = task_dir / fpath
+        if full_path.exists():
+            try:
+                file_contents[fpath] = full_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
+    # Build the fix prompt
+    system = (
+        "You are a Senior Developer fixing build errors. "
+        "You will receive error output and the current source files. "
+        "Fix ONLY the errors — do NOT rewrite files from scratch. "
+        "Keep all existing functionality intact. Only modify what's broken. "
+        "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n"
+        "Return: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n"
+        "Each file must have the COMPLETE corrected source code."
+    )
+
+    files_section = ""
+    for fpath, content in file_contents.items():
+        # Limit content to avoid token overflow
+        truncated = content[:4000] if len(content) > 4000 else content
+        files_section += f"\n--- {fpath} ---\n{truncated}\n"
+
+    user = (
+        f"Fix these build errors:\n\n"
+        f"ERROR OUTPUT:\n{error_output[-3000:]}\n\n"
+        f"CURRENT FILES:\n{files_section}\n\n"
+        f"Task: {title}\nDescription: {desc[:500]}\n\n"
+        "Return the corrected files as JSON: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n"
+        "IMPORTANT: Only return files that need changes. Keep all existing code intact. "
+        "Fix the specific errors shown above."
+    )
+
+    result = llm_json(system, user, max_tokens=16384, complexity=complexity)
+    files = result.get("files", []) if isinstance(result, dict) else []
+    valid_files = [
+        f for f in files
+        if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20
+    ]
+
+    if not valid_files and "_raw" in result:
+        debug_file = task_dir / ".llm_debug_fix.txt"
+        debug_file.write_text(result["_raw"], encoding="utf-8")
+        log_warn("Fix-only LLM returned invalid JSON. Saved debug output.", AGENT_NAME)
+
+    return valid_files
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN PROCESS
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -424,16 +553,32 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         if state.get("status") != "coding":
             return {"action": "no_result", "reason": f"State is {state.get('status')}, not coding."}
 
+        # ── Hard retry cap — force-advance after MAX_CODING_ITERATIONS ──
+        MAX_CODING_ITERATIONS = 5
+        iteration = state.get("iterations", 0)
+        if iteration >= MAX_CODING_ITERATIONS:
+            log_warn(
+                f"Hit max coding iterations ({MAX_CODING_ITERATIONS}). "
+                f"Force-advancing to testing — preserving existing code as-is.",
+                AGENT_NAME,
+            )
+            state["status"] = "testing"
+            state["test_errors"] = ""
+            _save_state(state_file, state)
+            return {"action": "coded", "task_id": task_id, "forced": True}
+
         title = task.get("title") or ""
         desc = task.get("description") or ""
         reqs = task.get("requirements") or ""
         past_errors = state.get("test_errors", "")
 
-        # ── Intelligence Escalation ──────────────────────────────────
-        # Escalate complexity if we've failed multiple times
+        # ── Progressive Intelligence Escalation ──────────────────────
+        # Iteration 0: high (default)
+        # Iteration 1: high (same model, targeted fix)
+        # Iteration 2+: extreme (upgrade to best available model)
         plan_complexity = "high"
-        if state.get("iterations", 0) >= 2:
-            log_warn(f"Escalating agent intelligence to 'extreme' due to {state['iterations']} previous failures", AGENT_NAME)
+        if iteration >= 2:
+            log_warn(f"Escalating to 'extreme' intelligence (iteration {iteration})", AGENT_NAME)
             plan_complexity = "extreme"
 
         # ── Fetch poster conversation context ────────────────────────
@@ -486,14 +631,15 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             log_warn("GitHub repo creation failed — continuing with local git only.", AGENT_NAME)
             state["repo_url"] = get_repo_url(task_id)
 
-        # ── STEP 3: Plan the implementation ───────────────────────────
+        # ── STEP 3: Plan the implementation (ONCE — never re-plan) ───
         if not state.get("plan"):
-            log_think("Planning implementation...", AGENT_NAME)
+            log_think("Planning implementation (Claude Sonnet — one-time plan)...", AGENT_NAME)
             write_progress(task_dir, task_id, "planning", "Analyzing requirements",
-                           f"Breaking task into implementation steps (iteration {state.get('iterations', 0) + 1})",
-                           "Architecting solution...", 5.0)
+                           "Breaking task into implementation steps",
+                           "Architecting solution with Claude Sonnet...", 5.0)
 
-            plan = plan_implementation(title, desc, reqs, past_errors, poster_context, complexity=plan_complexity)
+            # Always use claude-sonnet for the plan — this only runs once
+            plan = plan_implementation(title, desc, reqs, "", poster_context, complexity="high")
             if not plan or not plan.get("steps"):
                 log_warn("Planning failed, falling back to single-step approach.", AGENT_NAME)
                 plan = {
@@ -516,7 +662,6 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 append_commit_log(task_dir, h, "docs: add implementation plan")
                 log_ok(f"Committed implementation plan [{h}]", AGENT_NAME)
 
-            # Emit planning complete progress
             total = len(plan.get("steps", []))
             step_names = [s.get("description", f"Step {s.get('step_number', i+1)}") for i, s in enumerate(plan.get("steps", []))]
             write_progress(task_dir, task_id, "planning", "Implementation plan ready",
@@ -569,32 +714,28 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["scaffolded"] = True  # Don't retry
                 _save_state(state_file, state)
 
-        # ── STEP 4: Generate code for remaining Architectural blueprint ─
-        log_think("Requesting architectural blueprint enhancement from Claude...", AGENT_NAME)
-        write_progress(task_dir, task_id, "planning", "Enhancing architecture blueprint",
-                       "AI is generating detailed architectural specification",
-                       "Consulting Claude for deep technical blueprint...", 18.0)
+        # ── STEP 4: Architectural blueprint (cached — only generate once) ─
+        enhanced_blueprint = state.get("cached_blueprint", "")
+        if not enhanced_blueprint:
+            log_think("Generating architectural blueprint (one-time, Claude)...", AGENT_NAME)
+            write_progress(task_dir, task_id, "planning", "Enhancing architecture blueprint",
+                           "AI is generating detailed architectural specification",
+                           "Consulting Claude for deep technical blueprint...", 18.0)
 
-        prompt = (
-            f"You are the Coder Agent. We are building a solution for this task:\n"
-            f"Title: {title}\nDescription: {desc}\nRequirements: {reqs}\n"
-        )
-        if past_errors:
-            prompt += (
-                f"\nCRITICAL: PREVIOUS TEST FAILED WITH THIS ERROR:\n{past_errors}\n"
-                "YOU MUST RESOLVE THIS ISSUE WHATEVER IT TAKES. "
-                "Do not simply retry the same code. If the current approach is failing, "
-                "switch to a different architecture, change dependency versions, "
-                "rewrite core logic, or try an entirely new technical strategy to bypass this blocker. "
-                "You are empowered to be as aggressive as needed to achieve a passing build.\n"
+            prompt = (
+                f"You are the Coder Agent. We are building a solution for this task:\n"
+                f"Title: {title}\nDescription: {desc}\nRequirements: {reqs}\n"
             )
-
-        enhanced_blueprint = claude_enhance_prompt(prompt)
+            enhanced_blueprint = claude_enhance_prompt(prompt)
+            state["cached_blueprint"] = enhanced_blueprint
+            _save_state(state_file, state)
+        else:
+            log_think("Using cached architectural blueprint (skipping LLM call)", AGENT_NAME)
 
         # Load skills — from the Oriexa skills dir AND from .claude/skills/ in both repos
         skill_contents = _load_skills_for_task(title, desc, reqs, plan)
 
-        # ── STEP 5: Execute each step ─────────────────────────────────
+        # ── STEP 5: Execute steps OR fix errors ────────────────────────
         steps = plan.get("steps", [])
         completed_step_nums = {s["step_number"] for s in state.get("completed_steps", [])}
         existing_files = []
@@ -603,78 +744,102 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         for s in state.get("completed_steps", []):
             existing_files.extend(s.get("files_written", []))
 
-        for step in steps:
-            step_num = step.get("step_number", 0)
-            if step_num in completed_step_nums:
-                continue  # Already done
+        # ── FIX-ONLY MODE: If we have test_errors AND all steps are done,
+        #    only fix the broken files instead of regenerating everything.
+        if past_errors and len(completed_step_nums) == len(steps) and len(completed_step_nums) > 0:
+            log_think(f"Fix-only mode: all {len(steps)} steps already completed. Fixing build errors...", AGENT_NAME)
+            write_progress(task_dir, task_id, "execution", "Fixing build errors",
+                           "Targeted fix — only rewriting files with errors",
+                           "Analyzing error output to identify broken files...", 75.0)
 
-            step_desc = step.get("description", f"Step {step_num}")
-            commit_msg = step.get("commit_message", f"feat: {step_desc}")
-
-            log_think(f"Step {step_num}/{len(steps)}: {step_desc}", AGENT_NAME)
-            append_build_log(task_dir, f"Step {step_num}: {step_desc}")
-
-            # Emit progress for this step starting
-            step_pct = 20.0 + (step_num - 1) / max(len(steps), 1) * 60.0
-            write_progress(task_dir, task_id, "execution",
-                           f"Step {step_num}/{len(steps)}: {step_desc}",
-                           f"Generating code for: {step_desc}",
-                           f"Writing files for step {step_num}...",
-                           step_pct, subtask_id=step_num,
-                           metadata={"step": step_num, "total_steps": len(steps)})
-
-            # Generate code for this step
-            files = generate_step_code(
-                step, title, desc, reqs, enhanced_blueprint,
-                existing_files, skill_contents, poster_context, task_dir=task_dir,
-                complexity=plan_complexity
+            fix_files = _fix_build_errors(
+                past_errors, title, desc, reqs, enhanced_blueprint,
+                existing_files, skill_contents, poster_context, task_dir,
+                plan_complexity,
             )
+            if fix_files:
+                files_written = []
+                for f in fix_files:
+                    file_path = task_dir / f["path"]
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(f["content"], encoding="utf-8")
+                    files_written.append(f["path"])
 
-            if not files:
-                log_warn(f"Step {step_num} generated no files — skipping.", AGENT_NAME)
-                continue
-
-            # Write files to disk
-            files_written = []
-            for f in files:
-                file_path = task_dir / f["path"]
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(f["content"], encoding="utf-8")
-                files_written.append(f["path"])
-                existing_files.append(f["path"])
-
-            log_think(f"  Wrote {len(files_written)} files: {', '.join(files_written[:5])}", AGENT_NAME)
-
-            # Commit this step
-            h = commit_step(task_dir, commit_msg)
-            if h:
-                append_commit_log(task_dir, h, commit_msg)
-                log_ok(f"  Committed [{h}]: {commit_msg}", AGENT_NAME)
-
-                # Push every few commits
-                if should_push(task_dir):
+                log_ok(f"Fixed {len(files_written)} files: {', '.join(files_written[:5])}", AGENT_NAME)
+                h = commit_step(task_dir, f"fix: resolve build errors (iteration {iteration + 1})")
+                if h:
+                    append_commit_log(task_dir, h, "fix: resolve build errors")
                     push_to_remote(task_dir)
-                    log_ok("  Pushed to GitHub", AGENT_NAME)
+                    log_ok(f"Fix committed [{h}] and pushed", AGENT_NAME)
+            else:
+                log_warn("Fix-only mode produced no files — advancing to testing anyway.", AGENT_NAME)
 
-            # Emit step completed progress
-            step_pct_done = 20.0 + step_num / max(len(steps), 1) * 60.0
-            write_progress(task_dir, task_id, "execution",
-                           f"Step {step_num} complete: {step_desc}",
-                           f"Wrote {len(files_written)} files and committed",
-                           f"Committed: {commit_msg}",
-                           step_pct_done, subtask_id=step_num,
-                           metadata={"files_written": files_written[:5], "commit": h or ""})
+        else:
+            # ── Normal mode: execute remaining steps ──
+            for step in steps:
+                step_num = step.get("step_number", 0)
+                if step_num in completed_step_nums:
+                    continue  # Already done
 
-            # Track completed step
-            state["current_step"] = step_num
-            state["completed_steps"].append({
-                "step_number": step_num,
-                "description": step_desc,
-                "commit": h,
-                "files_written": files_written,
-            })
-            state["files"].extend(files)
-            _save_state(state_file, state)
+                step_desc = step.get("description", f"Step {step_num}")
+                commit_msg = step.get("commit_message", f"feat: {step_desc}")
+
+                log_think(f"Step {step_num}/{len(steps)}: {step_desc}", AGENT_NAME)
+                append_build_log(task_dir, f"Step {step_num}: {step_desc}")
+
+                step_pct = 20.0 + (step_num - 1) / max(len(steps), 1) * 60.0
+                write_progress(task_dir, task_id, "execution",
+                               f"Step {step_num}/{len(steps)}: {step_desc}",
+                               f"Generating code for: {step_desc}",
+                               f"Writing files for step {step_num}...",
+                               step_pct, subtask_id=step_num,
+                               metadata={"step": step_num, "total_steps": len(steps)})
+
+                files = generate_step_code(
+                    step, title, desc, reqs, enhanced_blueprint,
+                    existing_files, skill_contents, poster_context, task_dir=task_dir,
+                    complexity=plan_complexity
+                )
+
+                if not files:
+                    log_warn(f"Step {step_num} generated no files — skipping.", AGENT_NAME)
+                    continue
+
+                files_written = []
+                for f in files:
+                    file_path = task_dir / f["path"]
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(f["content"], encoding="utf-8")
+                    files_written.append(f["path"])
+                    existing_files.append(f["path"])
+
+                log_think(f"  Wrote {len(files_written)} files: {', '.join(files_written[:5])}", AGENT_NAME)
+
+                h = commit_step(task_dir, commit_msg)
+                if h:
+                    append_commit_log(task_dir, h, commit_msg)
+                    log_ok(f"  Committed [{h}]: {commit_msg}", AGENT_NAME)
+                    if should_push(task_dir):
+                        push_to_remote(task_dir)
+                        log_ok("  Pushed to GitHub", AGENT_NAME)
+
+                step_pct_done = 20.0 + step_num / max(len(steps), 1) * 60.0
+                write_progress(task_dir, task_id, "execution",
+                               f"Step {step_num} complete: {step_desc}",
+                               f"Wrote {len(files_written)} files and committed",
+                               f"Committed: {commit_msg}",
+                               step_pct_done, subtask_id=step_num,
+                               metadata={"files_written": files_written[:5], "commit": h or ""})
+
+                state["current_step"] = step_num
+                state["completed_steps"].append({
+                    "step_number": step_num,
+                    "description": step_desc,
+                    "commit": h,
+                    "files_written": files_written,
+                })
+                state["files"].extend(files)
+                _save_state(state_file, state)
 
         # ── STEP 6: Install dependencies ──────────────────────────────
         if (task_dir / "package.json").exists():
@@ -704,33 +869,9 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                        f"Repository: {state.get('repo_url', 'local git')}",
                        95.0, metadata={"repo_url": state.get("repo_url", "")})
 
-        # ── Transition to testing ─────────────────────────────────────
-        total_files = sum(len(s.get("files_written", [])) for s in state.get("completed_steps", []))
-        total_commits = len(state.get("commit_log", []))
-
-        # Validate: ensure we actually generated real source files
-        if total_files == 0:
-            log_err(f"CRITICAL: No source files were generated for task #{task_id}! "
-                    f"All {len(steps)} steps produced empty output.", AGENT_NAME)
-            
-            # Infinite Resilience: Increment iterations and reset state to retry autonomously
-            state["iterations"] = state.get("iterations", 0) + 1
-            
-            # Reset completed steps and plan to force a fresh start in the next tick
-            log_warn(f"AUTONOMOUS RESET: Resetting plan to retry code generation (iteration {state['iterations']})", AGENT_NAME)
-            state["plan"] = None
-            state["completed_steps"] = []
-            state["current_step"] = 0
-            state["scaffolded"] = False
-            
-            # If we've failed many times, maybe the workspace is corrupted — we could flag for a wipe here
-            # but for now we just reset the agent's internal state.
-            
-            _save_state(state_file, state)
-            return {"action": "error", "error": f"No source files generated (attempt {state['iterations']}) — autonomously resetting"}
-
+        # ── Transition to testing (NEVER wipe plan or completed steps) ─
         state["status"] = "testing"
-        state["iterations"] = state.get("iterations", 0) + 1
+        state["iterations"] = iteration + 1
         _save_state(state_file, state)
 
         total_files = sum(len(s.get("files_written", [])) for s in state.get("completed_steps", []))
