@@ -174,7 +174,7 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
             timeout=3600.0,
         )
         resp.raise_for_status()
-        data = resp.json()
+        data: dict = resp.json()
         return data["choices"][0]["message"]["content"]
     
     else:
@@ -312,7 +312,7 @@ def _extract_json_block(raw: str) -> str | None:
     return None
 
 
-def llm_json(system: str, user: str, max_tokens: int = 2048, complexity: str = "routine", provider: str = None) -> dict:
+def llm_json(system: str, user: str, max_tokens: int = 2048, complexity: str = "routine", provider: str | None = None) -> dict:
     """LLM call that returns parsed JSON, using smart routing and robust parsing."""
     if provider:
         try:
@@ -357,7 +357,7 @@ def kimi_enhance_prompt(prompt: str) -> str:
             max_tokens=4000, 
             provider="kimi"
         )
-        if len(enhanced) > 3000:
+        if isinstance(enhanced, str) and len(enhanced) > 3000:
             log_warn(f"Kimi blueprint was {len(enhanced)} chars — trimming to 3000", "Kimi")
             enhanced = enhanced[:3000] + "\n\n[Blueprint truncated for token safety]"
         return enhanced
@@ -381,7 +381,7 @@ def claude_enhance_prompt(prompt: str) -> str:
             max_tokens=4000, 
             provider="claude-sonnet"
         )
-        if len(enhanced) > 3000:
+        if isinstance(enhanced, str) and len(enhanced) > 3000:
             log_warn(f"Claude blueprint was {len(enhanced)} chars — trimming to 3000", "Claude")
             enhanced = enhanced[:3000] + "\n\n[Blueprint truncated for token safety]"
         return enhanced
@@ -455,7 +455,7 @@ class OriexaClient:
         OSError,
     )
 
-    def __init__(self, base_url: str, api_key: str = None):
+    def __init__(self, base_url: str, api_key: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.http = httpx.Client(base_url=self.base_url, timeout=3600.0)
@@ -536,10 +536,10 @@ class OriexaClient:
         # All retries exhausted
         raise last_error or RuntimeError(f"Request to {path} failed after {self.MAX_RETRIES} attempts")
 
-    def get(self, path: str, params: dict = None) -> dict:
+    def get(self, path: str, params: dict | None = None) -> dict:
         return self._request_with_retry("GET", path, params=params)
 
-    def post(self, path: str, json_data: dict = None) -> dict:
+    def post(self, path: str, json_data: dict | None = None) -> dict:
         return self._request_with_retry("POST", path, json=json_data)
 
     def browse_tasks(self, status: str = "open", limit: int = 20) -> list[dict]:

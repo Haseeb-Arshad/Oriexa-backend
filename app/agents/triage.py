@@ -25,7 +25,7 @@ class TriageAgent(BaseAgent):
     """
 
     def __init__(self) -> None:
-        super().__init__(role=AgentRole.TRIAGE.value, model_tier=ModelTier.FAST.value)
+        super().__init__(AgentRole.TRIAGE.value, ModelTier.FAST.value)
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """Invoke the LLM to triage the task."""

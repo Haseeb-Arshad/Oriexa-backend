@@ -30,7 +30,7 @@ class PlanningAgent(BaseAgent):
     """
 
     def __init__(self, model_tier: str = ModelTier.DEFAULT.value) -> None:
-        super().__init__(role=AgentRole.PLANNING.value, model_tier=model_tier)
+        super().__init__(AgentRole.PLANNING.value, model_tier)
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """Invoke the LLM with tool access to create a subtask plan."""
@@ -175,7 +175,8 @@ def _parse_plan(content: Any) -> list[dict[str, Any]]:
         pass
 
     # Try extracting from markdown code fences
-    text = content.strip()
+    # Try extracting from markdown code fences
+    text: str = str(content).strip()
     for marker in ("```json", "```"):
         if marker in text:
             text = text.split(marker, 1)[1]
