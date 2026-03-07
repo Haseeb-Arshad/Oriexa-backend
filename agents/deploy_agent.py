@@ -19,6 +19,7 @@ import re
 import sys
 import time
 import traceback
+import shutil
 from pathlib import Path
 
 # Add parent path
@@ -52,6 +53,12 @@ WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).pa
 VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN")
 VERCEL_ORG_ID = os.environ.get("VERCEL_ORG_ID")
 VERCEL_PROJECT_ID = os.environ.get("VERCEL_PROJECT_ID")
+VERCEL_USE_LINKED_PROJECT = os.environ.get("VERCEL_USE_LINKED_PROJECT", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -70,10 +77,23 @@ def run_vercel_deploy(task_dir: Path) -> str | None:
     append_build_log(task_dir, "Starting Vercel deployment...")
 
     env = os.environ.copy()
-    if VERCEL_ORG_ID:
+    # Default behavior: do NOT force-link every task into one Vercel project.
+    # This allows framework auto-detection (including plain static HTML/CSS/JS).
+    if VERCEL_USE_LINKED_PROJECT and VERCEL_ORG_ID and VERCEL_PROJECT_ID:
         env["VERCEL_ORG_ID"] = VERCEL_ORG_ID
-    if VERCEL_PROJECT_ID:
         env["VERCEL_PROJECT_ID"] = VERCEL_PROJECT_ID
+        log_think("Using linked Vercel project mode (VERCEL_USE_LINKED_PROJECT=true).", AGENT_NAME)
+    else:
+        env.pop("VERCEL_ORG_ID", None)
+        env.pop("VERCEL_PROJECT_ID", None)
+        # Remove stale local project link metadata so each task deploy can be auto-detected correctly.
+        stale_link_dir = task_dir / ".vercel"
+        if stale_link_dir.exists():
+            try:
+                shutil.rmtree(stale_link_dir, ignore_errors=True)
+            except Exception:
+                pass
+        log_think("Using unlinked Vercel deployment mode (framework auto-detection).", AGENT_NAME)
 
     # Build candidate command lists — token-based first if available
     candidates = []

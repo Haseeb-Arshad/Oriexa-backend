@@ -130,6 +130,15 @@ sudo systemctl show oriexa-swarm --property=Environment
 sudo systemctl show oriexa-worker --property=Environment
 ```
 
+Recommended for mixed task types (including plain HTML/CSS/JS):
+
+```bash
+echo 'VERCEL_USE_LINKED_PROJECT=false' >> /opt/oriexa/repo/.env
+```
+
+Only set `VERCEL_USE_LINKED_PROJECT=true` if you intentionally want every task
+deployment to use one preconfigured Vercel project.
+
 If Vercel still fails from the agent:
 
 ```bash
@@ -174,5 +183,6 @@ ufw allow 8000/tcp
 | `alembic: command not found` | Venv not installed — run `uv pip install -e .` |
 | Service not starting | Check logs: `sudo journalctl -u oriexa-api -n 50` |
 | Vercel deploy fails from agent | Ensure `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` are in `/opt/oriexa/repo/.env`, then restart `oriexa-swarm` and `oriexa-worker` |
+| `Couldn't find any pages or app directory` | Deploy is being forced into a Next.js-configured project. Set `VERCEL_USE_LINKED_PROJECT=false` (or remove `VERCEL_PROJECT_ID`) and restart swarm/worker |
 | IPv6 lost after reboot | Run the cloud-init disable command in Step 6 |
 
