@@ -554,19 +554,35 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         if state.get("status") != "coding":
             return {"action": "no_result", "reason": f"State is {state.get('status')}, not coding."}
 
-        # â”€â”€ Hard retry cap â€” force-advance after MAX_CODING_ITERATIONS â”€â”€
+        # Hard retry cap: block deployment instead of force-advancing bad code.
         MAX_CODING_ITERATIONS = 5
         iteration = state.get("iterations", 0)
         if iteration >= MAX_CODING_ITERATIONS:
             log_warn(
                 f"Hit max coding iterations ({MAX_CODING_ITERATIONS}). "
-                f"Force-advancing to testing â€” preserving existing code as-is.",
+                "Blocking further advancement until implementation is fixed.",
                 AGENT_NAME,
             )
-            state["status"] = "testing"
-            state["test_errors"] = ""
+            state["status"] = "coding"
+            state["test_errors"] = (
+                "Max coding iterations reached. Deployment blocked until meaningful implementation succeeds."
+            )
             _save_state(state_file, state)
-            return {"action": "coded", "task_id": task_id, "forced": True}
+            return {"action": "error", "task_id": task_id, "error": "max_coding_iterations_reached"}
+
+        # Recover from stale state snapshots that mark steps complete with no code.
+        if state.get("completed_steps") and not has_meaningful_implementation(task_dir):
+            log_warn(
+                "Stale state detected: completed_steps exist but repo has no meaningful files. Resetting coder state.",
+                AGENT_NAME,
+            )
+            state["current_step"] = 0
+            state["total_steps"] = 0
+            state["completed_steps"] = []
+            state["files"] = []
+            state["plan"] = None
+            state["cached_blueprint"] = ""
+            _save_state(state_file, state)
 
         title = task.get("title") or ""
         desc = task.get("description") or ""
@@ -772,7 +788,18 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     push_to_remote(task_dir)
                     log_ok(f"Fix committed [{h}] and pushed", AGENT_NAME)
             else:
-                log_warn("Fix-only mode produced no files â€” advancing to testing anyway.", AGENT_NAME)
+                log_warn(
+                    "Fix-only mode produced no files. Resetting state so next run performs a full re-plan and implementation.",
+                    AGENT_NAME,
+                )
+                state["current_step"] = 0
+                state["total_steps"] = 0
+                state["completed_steps"] = []
+                state["files"] = []
+                state["plan"] = None
+                state["cached_blueprint"] = ""
+                _save_state(state_file, state)
+                return {"action": "error", "error": "fix_only_no_files_reset_state"}
 
         else:
             # â”€â”€ Normal mode: execute remaining steps â”€â”€
