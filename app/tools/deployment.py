@@ -206,8 +206,11 @@ async def create_github_repo(
 
     if push_result.exit_code != 0:
         logger.warning("Git push failed: %s", (push_result.stderr or "")[:300])
-        # Still return the URL — repo was created even if push failed
-        return {"success": True, "repo_url": repo_url}
+        return {
+            "success": False,
+            "repo_url": repo_url,
+            "error": f"git push failed: {(push_result.stderr or push_result.stdout or '').strip()[:300]}",
+        }
 
     return {"success": True, "repo_url": repo_url}
 

@@ -23,6 +23,73 @@ def _eid(state: TaskState) -> int:
     return state.get("execution_id", 0)
 
 
+def _normalize_subtask_status(status: str | None) -> str:
+    normalized = (status or "").strip().lower()
+    if normalized in {"pending", "in_progress", "completed", "failed", "skipped"}:
+        return normalized
+    return "completed" if normalized in {"done", "success"} else "failed"
+
+
+_HOUSEKEEPING_FILES = {
+    ".gitignore",
+    ".build_log",
+    ".swarm_state.json",
+}
+
+
+_MEANINGFUL_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".rb", ".php",
+    ".html", ".css", ".scss", ".sql", ".json", ".yaml", ".yml", ".md",
+}
+
+
+def _has_meaningful_file_changes(
+    files_created: list[str],
+    files_modified: list[str],
+) -> bool:
+    for path in [*files_created, *files_modified]:
+        if not path:
+            continue
+        name = path.replace("\\", "/").rsplit("/", 1)[-1]
+        if name in _HOUSEKEEPING_FILES:
+            continue
+        suffix = ""
+        if "." in name and not name.startswith("."):
+            suffix = "." + name.rsplit(".", 1)[-1].lower()
+        if suffix in _MEANINGFUL_EXTENSIONS or suffix == "":
+            return True
+    return False
+
+
+async def _persist_subtask_results(
+    execution_id: int,
+    subtask_results: list[dict[str, Any]],
+) -> None:
+    if execution_id <= 0:
+        return
+    try:
+        from app.db.engine import async_session
+        from app.db.models import OrchSubtask
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(OrchSubtask).where(OrchSubtask.execution_id == execution_id)
+            )
+            rows = {row.order_index: row for row in result.scalars().all()}
+            for item in subtask_results:
+                idx = int(item.get("index", -1))
+                row = rows.get(idx)
+                if row is None:
+                    continue
+                row.status = _normalize_subtask_status(item.get("status"))
+                row.result = str(item.get("result", ""))[:4000]
+                files_changed = item.get("files_changed")
+                row.files_changed = files_changed if isinstance(files_changed, list) else []
+            await session.commit()
+    except Exception as exc:
+        logger.warning("Failed to persist subtask results for execution %d: %s", execution_id, exc)
+
+
 # ---------------------------------------------------------------------------
 # Helper: fetch messages for a task via the Oriexa API
 # ---------------------------------------------------------------------------
@@ -400,6 +467,8 @@ async def execution_node(state: TaskState) -> dict[str, Any]:
     )
     agent = ExecutionAgent(model_tier=exec_tier)
     result = await agent.run(state)
+    subtask_results = result.get("subtask_results", [])
+    await _persist_subtask_results(eid, subtask_results)
 
     files_created = result.get("files_created", [])
     files_modified = result.get("files_modified", [])
@@ -432,7 +501,7 @@ async def execution_node(state: TaskState) -> dict[str, Any]:
 
     return {
         "phase": "execution",
-        "subtask_results": result.get("subtask_results", []),
+        "subtask_results": subtask_results,
         "files_created": files_created,
         "files_modified": files_modified,
         "commands_executed": commands,
@@ -467,6 +536,8 @@ async def complex_execution_node(state: TaskState) -> dict[str, Any]:
     )
     agent = ComplexTaskAgent(model_tier=complex_tier)
     result = await agent.run(state)
+    subtask_results = result.get("subtask_results", [])
+    await _persist_subtask_results(eid, subtask_results)
 
     files_created = result.get("files_created", [])
     files_modified = result.get("files_modified", [])
@@ -490,7 +561,7 @@ async def complex_execution_node(state: TaskState) -> dict[str, Any]:
 
     return {
         "phase": "execution",
-        "subtask_results": result.get("subtask_results", []),
+        "subtask_results": subtask_results,
         "files_created": files_created,
         "files_modified": files_modified,
         "commands_executed": result.get("commands_executed", []),
@@ -529,6 +600,33 @@ async def review_node(state: TaskState) -> dict[str, Any]:
 
     progress_tracker.add_step(eid, "review", "thinking",
         detail="Evaluating completeness, correctness, code quality, and test coverage")
+
+    files_created = state.get("files_created", [])
+    files_modified = state.get("files_modified", [])
+    commands_executed = state.get("commands_executed", [])
+    has_meaningful_changes = _has_meaningful_file_changes(files_created, files_modified)
+    if not has_meaningful_changes:
+        feedback = (
+            "No meaningful implementation changes detected. "
+            "Please create/modify actual project files (not only housekeeping files like .gitignore) before delivery."
+        )
+        progress_tracker.add_step(
+            eid,
+            "review",
+            "done",
+            detail="Review failed: no meaningful implementation changes detected",
+            metadata={"score": 0, "passed": False},
+        )
+        return {
+            "phase": "review",
+            "review_score": 0,
+            "review_passed": False,
+            "review_feedback": feedback,
+            "test_results": test_results,
+            "attempt_count": state.get("attempt_count", 0) + 1,
+            "total_prompt_tokens": state.get("total_prompt_tokens", 0),
+            "total_completion_tokens": state.get("total_completion_tokens", 0),
+        }
 
     agent = ReviewAgent()
     # Inject test results into the state so ReviewAgent can see them
@@ -596,6 +694,8 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
         "vercel_preview_url": None,
         "vercel_claim_url": None,
         "test_results": state.get("test_results", {}), # pass it forward so lifecycle formatting uses it
+        "deployment_passed": True,
+        "deployment_errors": [],
     }
 
     # 2. Create GitHub repo (MANDATORY — all deliveries must be on GitHub)
@@ -662,10 +762,12 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
         else:
             error_msg = gh_result.get("error", "unknown error")
             logger.error("GitHub repo creation failed: %s", error_msg)
+            result["deployment_errors"].append(f"github: {error_msg}")
             progress_tracker.add_step(eid, "deployment", "github",
                 detail=f"GitHub repo creation FAILED: {error_msg}")
     except Exception as exc:
         logger.error("GitHub repo creation error: %s", exc)
+        result["deployment_errors"].append(f"github: {exc}")
         progress_tracker.add_step(eid, "deployment", "github",
             detail=f"GitHub error: {exc}")
 
@@ -696,6 +798,14 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
         progress_tracker.add_step(eid, "deployment", "vercel",
             detail=f"Vercel error (Non-fatal, continuing): {exc}")
 
+    if not result["github_repo_url"]:
+        result["deployment_errors"].append("github: missing repository URL")
+    if task_type == "frontend" and not result["vercel_preview_url"]:
+        result["deployment_errors"].append("vercel: missing preview URL for frontend task")
+    result["deployment_errors"] = list(dict.fromkeys(result["deployment_errors"]))
+    if result["deployment_errors"]:
+        result["deployment_passed"] = False
+
     # 4. Final git commit with deployment metadata
     if workspace_path:
         git = GitHelper(workspace_path)
@@ -719,11 +829,14 @@ async def deployment_node(state: TaskState) -> dict[str, Any]:
     if test_summary:
         parts.append(f"Tests: {test_summary}")
     detail = ". ".join(parts) if parts else "Deployment pipeline complete."
+    if not result["deployment_passed"]:
+        detail += " Deployment failed checks: " + "; ".join(result["deployment_errors"])
 
     progress_tracker.add_step(eid, "deployment", "done", detail=detail,
         metadata={
             "github_repo_url": result["github_repo_url"],
             "vercel_preview_url": result["vercel_preview_url"],
+            "deployment_passed": result["deployment_passed"],
         })
 
     return result
@@ -830,6 +943,12 @@ def route_after_review(state: TaskState) -> str:
     return "failed"
 
 
+def route_after_deployment(state: TaskState) -> str:
+    if state.get("deployment_passed", True):
+        return "delivery"
+    return "failed"
+
+
 # ---------------------------------------------------------------------------
 # Graph builder
 # ---------------------------------------------------------------------------
@@ -873,7 +992,10 @@ def build_supervisor_graph() -> StateGraph:
         "complex_execution": "complex_execution",
         "failed": "failed",
     })
-    graph.add_edge("deployment", "delivery")
+    graph.add_conditional_edges("deployment", route_after_deployment, {
+        "delivery": "delivery",
+        "failed": "failed",
+    })
     graph.add_edge("delivery", END)
     graph.add_edge("failed", END)
 

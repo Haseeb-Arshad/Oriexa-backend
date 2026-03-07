@@ -302,13 +302,13 @@ def _parse_execution_result(content: str, plan: list[dict[str, Any]]) -> dict[st
 
     logger.error("ExecutionAgent: could not parse result JSON: %s", content[:500])
 
-    # Fallback: mark all subtasks as completed with the raw content as result
+    # Fallback: parsing failed, treat execution as failed instead of pretending success.
     return {
         "subtask_results": [
             {
                 "index": i,
                 "title": s.get("title", f"Subtask {i}"),
-                "status": "completed",
+                "status": "failed",
                 "result": content[:1000] if i == 0 else "See subtask 0 result.",
                 "files_changed": [],
             }

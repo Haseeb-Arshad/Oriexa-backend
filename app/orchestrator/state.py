@@ -74,6 +74,8 @@ class TaskState(TypedDict, total=False):
     github_repo_url: str | None
     vercel_preview_url: str | None
     vercel_claim_url: str | None
+    deployment_passed: bool
+    deployment_errors: list[str]
     test_results: dict[str, Any]
 
     # Retry tracking

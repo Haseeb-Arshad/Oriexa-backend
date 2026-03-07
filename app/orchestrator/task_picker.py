@@ -221,18 +221,9 @@ class TaskPickerDaemon:
             task_id = data.get("task_id") or data.get("taskId")
             logger.info("Claim accepted for task %s — starting orchestration", task_id)
             if task_id and self.pool.has_capacity():
-                # Check if we're already tracking this task
-                async with async_session() as session:
-                    result = await session.execute(
-                        select(OrchTaskExecution.id).where(
-                            OrchTaskExecution.oriexa_task_id == task_id,
-                            OrchTaskExecution.status.notin_(["failed", "completed"]),
-                        )
-                    )
-                    if not result.first():
-                        task_data = await self.client.get_task(task_id)
-                        if task_data:
-                            await self._start_accepted_task(task_data)
+                task_data = await self.client.get_task(task_id)
+                if task_data:
+                    await self._start_accepted_task(task_data)
 
         elif event == "claim.rejected":
             task_id = data.get("task_id") or data.get("taskId")
@@ -449,21 +440,12 @@ class TaskPickerDaemon:
         if not claims:
             return
 
-        # Get task IDs we're already tracking
-        async with async_session() as session:
-            tracked_result = await session.execute(
-                select(OrchTaskExecution.oriexa_task_id).where(
-                    OrchTaskExecution.status.notin_(["failed", "completed"])
-                )
-            )
-            tracked_ids = {row[0] for row in tracked_result.all()}
-
         for claim in claims:
             if not self.pool.has_capacity():
                 break
 
             task_id = claim.get("task_id")
-            if not task_id or task_id in tracked_ids:
+            if not task_id:
                 continue
 
             # Fetch full task data and start orchestration
@@ -491,7 +473,11 @@ class TaskPickerDaemon:
             existing = result.scalar_one_or_none()
 
             if existing is not None:
-                if existing.status not in (OrchTaskStatus.FAILED.value, OrchTaskStatus.CLAIMING.value):
+                if existing.status not in (
+                    OrchTaskStatus.FAILED.value,
+                    OrchTaskStatus.CLAIMING.value,
+                    OrchTaskStatus.PENDING.value,
+                ):
                     logger.info(
                         "Task %d execution %d already active (status=%s), skipping",
                         task_id, existing.id, existing.status,
@@ -572,7 +558,11 @@ class TaskPickerDaemon:
             existing = result.scalar_one_or_none()
 
             if existing is not None:
-                if existing.status not in (OrchTaskStatus.FAILED.value, OrchTaskStatus.CLAIMING.value):
+                if existing.status not in (
+                    OrchTaskStatus.FAILED.value,
+                    OrchTaskStatus.CLAIMING.value,
+                    OrchTaskStatus.PENDING.value,
+                ):
                     # Already pending/in-progress — don't double-start
                     logger.info(
                         "Task %d execution %d already active (status=%s), skipping",
