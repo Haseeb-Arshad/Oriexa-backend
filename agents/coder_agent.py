@@ -345,6 +345,9 @@ _SKILL_KEYWORD_MAP: list[tuple[list[str], list[str]]] = [
     # Frontend / React / Next.js
     (["react", "next", "nextjs", "frontend", "ui", "dashboard", "landing", "tailwind", "component"],
      ["react-best-practices", "composition-patterns", "frontend-design", "senior-frontend", "vercel-deploy"]),
+    # Frontend visual/design polish ("frontend taste")
+    (["design", "aesthetic", "beautiful", "polish", "animation", "hero", "layout", "ux", "ui/ux", "responsive"],
+     ["frontend-design", "theme-factory", "senior-frontend"]),
     # Backend / API
     (["api", "backend", "server", "fastapi", "flask", "express", "rest", "graphql", "database", "sql", "postgres"],
      ["senior-backend", "senior-architect"]),
@@ -382,12 +385,26 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
         if keywords == ["*"] or any(kw in task_text or kw in project_type for kw in keywords):
             selected_skill_names.update(skill_names)
 
+    # Hard guarantee: frontend implementation always carries frontend taste + architecture patterns.
+    if project_type in {"nextjs", "react", "vite", "static"}:
+        selected_skill_names.update(
+            {"frontend-design", "composition-patterns", "senior-frontend"}
+        )
+
     contents: list[str] = []
     repo_root = Path(__file__).resolve().parent.parent
+    env_skill_dirs = [
+        Path(p.strip())
+        for p in (os.environ.get("ORIEXA_SKILLS_DIRS", "") or "").split(",")
+        if p.strip()
+    ]
 
     api_skills_candidates = [
         repo_root / "skills",
+        repo_root.parent / "Oriexa" / "skills",
+        repo_root.parent / "oriexa" / "skills",
         Path("f:/Oriexa/Oriexa/skills"),  # legacy fallback
+        *env_skill_dirs,
     ]
     claude_skills_candidates = [
         repo_root / ".claude" / "skills",
