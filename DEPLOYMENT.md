@@ -107,15 +107,34 @@ sudo systemctl status oriexa-api
 
 ---
 
-## Every future deploy (git push → droplet update)
+## Every future deploy (git push -> droplet update)
 
 ```bash
 cd /opt/oriexa/repo
 git pull origin main
 uv pip install -e .
 .venv/bin/alembic upgrade head
-sudo systemctl restart oriexa-api
+sudo systemctl daemon-reload
+sudo systemctl restart oriexa-api oriexa-swarm oriexa-worker
 sudo systemctl status oriexa-api
+sudo systemctl status oriexa-swarm
+sudo systemctl status oriexa-worker
+```
+
+### Verify deploy env for swarm/worker (required for Vercel deploys)
+
+```bash
+cd /opt/oriexa/repo
+grep -E '^(VERCEL_TOKEN|VERCEL_ORG_ID|VERCEL_PROJECT_ID)=' .env
+sudo systemctl show oriexa-swarm --property=Environment
+sudo systemctl show oriexa-worker --property=Environment
+```
+
+If Vercel still fails from the agent:
+
+```bash
+sudo journalctl -u oriexa-swarm -n 150 --no-pager
+sudo journalctl -u oriexa-worker -n 150 --no-pager
 ```
 
 ---
@@ -154,4 +173,6 @@ ufw allow 8000/tcp
 | `No module named 'app'` | Wrong Python — use `.venv/bin/alembic`, not system `alembic` |
 | `alembic: command not found` | Venv not installed — run `uv pip install -e .` |
 | Service not starting | Check logs: `sudo journalctl -u oriexa-api -n 50` |
+| Vercel deploy fails from agent | Ensure `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` are in `/opt/oriexa/repo/.env`, then restart `oriexa-swarm` and `oriexa-worker` |
 | IPv6 lost after reboot | Run the cloud-init disable command in Step 6 |
+

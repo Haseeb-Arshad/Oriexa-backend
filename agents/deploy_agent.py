@@ -52,6 +52,7 @@ WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).pa
 VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN")
 VERCEL_ORG_ID = os.environ.get("VERCEL_ORG_ID")
 VERCEL_PROJECT_ID = os.environ.get("VERCEL_PROJECT_ID")
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -81,6 +82,8 @@ def run_vercel_deploy(task_dir: Path) -> str | None:
     # Always also try without token (works if `vercel login` was run)
     candidates.append(["vercel", "--prod", "--yes"])
 
+    last_error_excerpt = ""
+
     for cmd in candidates:
         try:
             proc = subprocess.run(
@@ -88,17 +91,35 @@ def run_vercel_deploy(task_dir: Path) -> str | None:
                 timeout=600, env=env,
             )
             output = (proc.stdout + "\n" + proc.stderr).strip()
-            log_command(task_dir, " ".join(cmd[:3]), proc.returncode, output)
+            clean_output = ANSI_ESCAPE_RE.sub("", output)
+            log_command(task_dir, " ".join(cmd[:3]), proc.returncode, clean_output)
 
             if proc.returncode == 0:
-                urls = re.findall(r'https://[a-zA-Z0-9.-]+\.vercel\.app', output)
-                if urls:
-                    log_ok(f"Vercel deploy succeeded: {urls[0]}", AGENT_NAME)
-                    return urls[0]
+                # Prefer explicit "Production:" URL when present.
+                prod_match = re.search(r"Production:\s*(https://[^\s]+)", clean_output)
+                if prod_match:
+                    deployed_url = prod_match.group(1).rstrip(").,")
+                    log_ok(f"Vercel deploy succeeded: {deployed_url}", AGENT_NAME)
+                    return deployed_url
+
+                urls = re.findall(r"https://[^\s)]+", clean_output)
+                vercel_urls = [u.rstrip(").,") for u in urls if "vercel.app" in u]
+                if vercel_urls:
+                    log_ok(f"Vercel deploy succeeded: {vercel_urls[0]}", AGENT_NAME)
+                    return vercel_urls[0]
+
+                inspect_match = re.search(r"Inspect:\s*(https://[^\s]+)", clean_output)
+                if inspect_match:
+                    log_warn(
+                        "Vercel command succeeded but only Inspect URL was found; missing production URL in CLI output.",
+                        AGENT_NAME,
+                    )
+
                 log_warn("Vercel exited 0 but no URL found in output.", AGENT_NAME)
             else:
+                last_error_excerpt = clean_output[:600]
                 log_warn(
-                    f"Vercel attempt failed (rc={proc.returncode}): {output[:300]}",
+                    f"Vercel attempt failed (rc={proc.returncode}): {last_error_excerpt[:300]}",
                     AGENT_NAME,
                 )
         except FileNotFoundError:
@@ -107,8 +128,11 @@ def run_vercel_deploy(task_dir: Path) -> str | None:
         except Exception as e:
             log_warn(f"Vercel execution error: {e}", AGENT_NAME)
 
+    if last_error_excerpt:
+        append_build_log(task_dir, f"Final Vercel failure excerpt: {last_error_excerpt}")
     log_warn(
-        "Vercel deployment failed. Run `vercel login` or set VERCEL_TOKEN in start_swarm.bat.",
+        "Vercel deployment failed. Configure VERCEL_TOKEN in the running service environment (systemd EnvironmentFile) "
+        "or run `vercel login` as that service user.",
         AGENT_NAME,
     )
     return None
