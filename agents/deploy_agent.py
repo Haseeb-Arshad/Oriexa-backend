@@ -180,6 +180,13 @@ def smoke_test(url: str, retries: int = 3, wait: int = 10) -> tuple[bool, str]:
             status = resp.status_code
             body_len = len(resp.text)
 
+            # Explicitly detect private/protected deployments.
+            if status in (401, 403):
+                return (
+                    False,
+                    f"HTTP {status} — deployment is protected/private. Disable Vercel deployment protection to make it public.",
+                )
+
             if status == 200 and body_len > 100:
                 # Check it's not an error page
                 lower = resp.text.lower()
@@ -284,8 +291,23 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                         state["smoke_test"] = {"passed": True, "details": details2}
                         deploy_passed = True
                     else:
-                        log_warn(f"Retry smoke test also FAILED. Proceeding anyway.", AGENT_NAME)
+                        log_warn("Retry smoke test also FAILED.", AGENT_NAME)
                         state["vercel_url"] = vercel_url_retry
+                        return {
+                            "action": "error",
+                            "error": (
+                                "Deployment URL is not publicly reachable after retry "
+                                f"({details2}). Disable Vercel protection/private access settings."
+                            ),
+                        }
+                else:
+                    return {
+                        "action": "error",
+                        "error": (
+                            "Deployment URL is not publicly reachable "
+                            f"({details}). Disable Vercel protection/private access settings."
+                        ),
+                    }
         else:
             log_warn("Vercel deployment skipped or failed.", AGENT_NAME)
             vercel_url = None

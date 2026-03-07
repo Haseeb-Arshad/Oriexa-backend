@@ -111,20 +111,17 @@ async def get_execution_logs(execution_id: int) -> dict[str, Any]:
 
 @router.get("/by-task/{task_id}/active")
 async def get_active_execution_for_task(task_id: int) -> dict[str, Any]:
-    """Find the active (running) execution for a given Oriexa task ID."""
+    """Find the latest execution for a given Oriexa task ID.
+
+    This intentionally includes failed executions so the frontend can render
+    failure state instead of showing an indefinite startup loader.
+    """
     from app.orchestrator.progress import progress_tracker
 
     async with async_session() as session:
         result = await session.execute(
             select(OrchTaskExecution)
-            .where(
-                OrchTaskExecution.oriexa_task_id == task_id,
-                # Include completed so frontend can still display execution history
-                OrchTaskExecution.status.in_([
-                    "pending", "claiming", "clarifying", "planning",
-                    "executing", "reviewing", "delivering", "completed",
-                ]),
-            )
+            .where(OrchTaskExecution.oriexa_task_id == task_id)
             .order_by(OrchTaskExecution.id.desc())
             .limit(1)
         )
