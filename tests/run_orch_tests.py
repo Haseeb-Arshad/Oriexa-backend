@@ -80,9 +80,14 @@ def test_graph_routing():
     )
 
     # Triage
-    assert route_after_triage({"needs_clarification": True}) == "clarification"
+    assert route_after_triage({"needs_clarification": True}) == "planning"
     assert route_after_triage({"needs_clarification": False}) == "planning"
     assert route_after_triage({}) == "planning"
+    assert route_after_triage({
+        "needs_clarification": True,
+        "clarity_score": 0.1,
+        "disable_post_claim_clarification": False,
+    }) == "clarification"
 
     # Planning
     assert route_after_planning({"complexity": "high"}) == "complex_execution"
@@ -296,7 +301,8 @@ def test_tools():
     assert "analyze_codebase" in plan_names
 
     comm_names = [t.name for t in COMMUNICATION_TOOLS]
-    assert "send_clarification" in comm_names
+    assert "post_question" in comm_names
+    assert "read_task_messages" in comm_names
 
     print(f"PASS: Tools ({len(exec_names)} exec, {len(plan_names)} plan, {len(comm_names)} comm)")
 

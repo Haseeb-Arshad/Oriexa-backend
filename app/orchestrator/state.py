@@ -31,6 +31,7 @@ class TaskState(TypedDict, total=False):
 
     # Current phase
     phase: str  # "triage" | "clarification" | "planning" | "execution" | "review" | "delivery"
+    disable_post_claim_clarification: bool
 
     # Triage results
     clarity_score: float

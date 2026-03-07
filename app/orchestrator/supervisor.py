@@ -1085,7 +1085,12 @@ async def failed_node(state: TaskState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def route_after_triage(state: TaskState) -> str:
-    # Skip clarification for highly clear tasks (saves an LLM round-trip)
+    # Product decision: after a claim is accepted, do not block execution
+    # with additional clarification. Keep moving and handle ambiguity in-chat.
+    if bool(state.get("disable_post_claim_clarification", True)):
+        return "planning"
+
+    # Legacy path (kept for optional future toggle)
     clarity = state.get("clarity_score", 0.5)
     if state.get("needs_clarification", False) and clarity < 0.85:
         return "clarification"

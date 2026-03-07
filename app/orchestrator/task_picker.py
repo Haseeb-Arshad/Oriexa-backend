@@ -736,6 +736,7 @@ class TaskPickerDaemon:
             "oriexa_task_id": task_id,
             "task_data": task_data,
             "phase": "triage",
+            "disable_post_claim_clarification": True,
             "workspace_path": workspace_path,
             "attempt_count": attempt_count,
             "max_attempts": 3,

@@ -15,6 +15,14 @@ class TestGraphRouting:
 
     def test_route_after_triage_needs_clarification(self):
         state = {"needs_clarification": True}
+        assert route_after_triage(state) == "planning"
+
+    def test_route_after_triage_can_still_clarify_when_flag_disabled(self):
+        state = {
+            "needs_clarification": True,
+            "clarity_score": 0.1,
+            "disable_post_claim_clarification": False,
+        }
         assert route_after_triage(state) == "clarification"
 
     def test_route_after_triage_clear(self):
