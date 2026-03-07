@@ -60,6 +60,7 @@ async def get_progress(execution_id: int) -> dict[str, Any]:
             "execution_id": execution_id,
             "steps": [
                 {
+                    "index": i,
                     "phase": s.phase,
                     "title": s.title,
                     "description": s.description,
@@ -68,7 +69,7 @@ async def get_progress(execution_id: int) -> dict[str, Any]:
                     "timestamp": s.timestamp,
                     "metadata": s.metadata,
                 }
-                for s in steps
+                for i, s in enumerate(steps)
             ],
             "is_complete": bool(steps and steps[-1].phase in ("delivery", "failed")),
             "current_phase": steps[-1].phase if steps else None,

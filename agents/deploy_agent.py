@@ -34,7 +34,13 @@ from agents.base_agent import (
     smart_llm_call,
     write_progress,
 )
-from agents.git_ops import commit_step, push_to_remote, append_commit_log
+from agents.git_ops import (
+    commit_step,
+    push_to_remote,
+    append_commit_log,
+    has_meaningful_implementation,
+    verify_remote_has_main,
+)
 from agents.shell_executor import run_shell_combined, append_build_log, log_command
 
 import subprocess
@@ -184,6 +190,15 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                        "Running Vercel production deployment",
                        "Initializing deployment pipeline...", 96.0, subtask_id=101)
 
+        if not repo_url or "No Repo URL" in repo_url:
+            return {"action": "error", "error": "Missing GitHub repository URL; deployment blocked"}
+        if not has_meaningful_implementation(task_dir):
+            return {"action": "error", "error": "No meaningful implementation files in repository; deployment blocked"}
+        if not verify_remote_has_main(task_dir):
+            push_to_remote(task_dir)
+            if not verify_remote_has_main(task_dir):
+                return {"action": "error", "error": "GitHub remote main branch missing; deployment blocked"}
+
         # ── Deploy to Vercel ──────────────────────────────────────────
         vercel_url = run_vercel_deploy(task_dir)
         deploy_passed = False
@@ -229,7 +244,10 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                         state["vercel_url"] = vercel_url_retry
         else:
             log_warn("Vercel deployment skipped or failed.", AGENT_NAME)
-            vercel_url = "Deployment skipped (no VERCEL_TOKEN set)"
+            vercel_url = None
+
+        if not vercel_url:
+            return {"action": "error", "error": "Vercel deployment failed; deliverable submission blocked"}
 
         # ── Commit deploy results ─────────────────────────────────────
         deploy_summary = {
@@ -359,7 +377,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             log_warn(f"Failed to clean up workspace {task_dir}: {e}", AGENT_NAME)
 
         return {
-            "action": "deployed",
+            "action": "delivered",
             "task_id": task_id,
             "repo": repo_url,
             "vercel": state.get("vercel_url"),

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Oriexa Tester Agent — Run Tests and Commit Results
 
 Tests the generated codebase:
@@ -152,19 +152,22 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     if test_iteration >= MAX_TEST_RETRIES:
                         log_warn(
                             f"Build failed {test_iteration + 1} time(s). Max retries ({MAX_TEST_RETRIES}) reached. "
-                            f"Force-advancing to deployment — human reviewer will evaluate.",
+                            "Blocking deployment until build is fixed.",
                             AGENT_NAME,
                         )
-                        state["status"] = "deploying"
-                        state["test_errors"] = ""
+                        state["status"] = "coding"
+                        state["test_errors"] = (
+                            "BUILD FAILED after max retries. Do not deploy.\n"
+                            + (build_out[-2000:] if len(build_out) > 2000 else build_out)
+                        )
                         state["test_iteration"] = test_iteration + 1
                         with open(state_file, "w") as f:
                             import json as _json2; _json2.dump(state, f, indent=2)
-                        h = commit_step(task_dir, f"build: failed (attempt {test_iteration + 1}) — force-advancing to deploy")
+                        h = commit_step(task_dir, f"build: failed (attempt {test_iteration + 1}) - deployment blocked")
                         if h:
-                            append_commit_log(task_dir, h, "build: failed, force-advancing")
+                            append_commit_log(task_dir, h, "build: failed, deployment blocked")
                             push_to_remote(task_dir)
-                        return {"action": "tested", "task_id": task_id, "passed": False, "reason": "build_failed_max_retries", "forced": True}
+                        return {"action": "tested", "task_id": task_id, "passed": False, "reason": "build_failed_max_retries"}
                     else:
                         log_warn(f"Build FAILED (rc={build_rc}, attempt {test_iteration + 1}/{MAX_TEST_RETRIES}). Looping back to Coder for targeted fix.", AGENT_NAME)
                         state["status"] = "coding"
@@ -251,16 +254,19 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             if test_iteration >= MAX_TEST_RETRIES:
                 log_warn(
                     f"Tests failed {test_iteration + 1} time(s). Max retries ({MAX_TEST_RETRIES}) reached. "
-                    f"Force-advancing to deployment — human reviewer will evaluate.",
+                    "Blocking deployment until tests pass.",
                     AGENT_NAME,
                 )
-                state["status"] = "deploying"
-                state["test_errors"] = ""
+                state["status"] = "coding"
+                state["test_errors"] = (
+                    f"TESTS FAILED after max retries (command: {test_command}, exit: {rc}).\n"
+                    + limited_out
+                )
                 state["test_iteration"] = test_iteration + 1
 
-                h = commit_step(task_dir, f"test: failing (attempt {test_iteration + 1}) — force-advancing to deploy")
+                h = commit_step(task_dir, f"test: failing (attempt {test_iteration + 1}) - deployment blocked")
                 if h:
-                    append_commit_log(task_dir, h, "test: failing, force-advancing")
+                    append_commit_log(task_dir, h, "test: failing, deployment blocked")
                     push_to_remote(task_dir)
 
             else:

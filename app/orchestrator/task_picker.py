@@ -307,7 +307,12 @@ class TaskPickerDaemon:
             result = await session.execute(
                 select(OrchTaskExecution).where(
                     OrchTaskExecution.oriexa_task_id == task_id,
-                    OrchTaskExecution.status == OrchTaskStatus.IN_PROGRESS.value
+                    OrchTaskExecution.status.in_([
+                        OrchTaskStatus.PLANNING.value,
+                        OrchTaskStatus.EXECUTING.value,
+                        OrchTaskStatus.REVIEWING.value,
+                        OrchTaskStatus.DELIVERING.value,
+                    ])
                 ).order_by(OrchTaskExecution.id.desc()).limit(1)
             )
             execution = result.scalar_one_or_none()

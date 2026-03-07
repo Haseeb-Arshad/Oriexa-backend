@@ -21,6 +21,16 @@ import httpx
 
 GITHUB_USERNAME = os.environ.get("GITHUB_USERNAME", "Haseeb-Arshad")
 COMMIT_PUSH_INTERVAL = int(os.environ.get("COMMIT_PUSH_INTERVAL", "3"))  # push every N commits
+HOUSEKEEPING_FILES = {
+    ".gitignore",
+    ".build_log",
+    ".dispatch_log",
+    ".swarm_state.json",
+    ".agent_lock",
+    ".test_results.json",
+    ".deploy_results.json",
+    "progress.jsonl",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -178,7 +188,7 @@ def create_github_repo(task_id: int, task_dir: Path) -> str | None:
     _run(["git", "remote", "add", "origin", auth_url], task_dir)
     rc, _ = _run(["git", "push", "-u", "origin", "main", "--force"], task_dir, timeout=30)
 
-    return repo_url if rc == 0 else repo_url  # Return URL even if push fails
+    return repo_url if rc == 0 else None
 
 
 def commit_step(
@@ -234,6 +244,33 @@ def push_to_remote(task_dir: Path, force: bool = False) -> bool:
         cmd.append("--force")
     rc, out = _run(cmd, task_dir, timeout=30)
     return rc == 0
+
+
+def has_meaningful_implementation(task_dir: Path) -> bool:
+    """Return True when repo contains non-housekeeping tracked files."""
+    rc, out = _run(["git", "ls-files"], task_dir, timeout=30)
+    if rc != 0:
+        return False
+
+    tracked = [line.strip() for line in out.splitlines() if line.strip()]
+    meaningful = []
+    for rel in tracked:
+        p = rel.replace("\\", "/").strip()
+        if not p:
+            continue
+        if p.startswith(".git/"):
+            continue
+        if p in HOUSEKEEPING_FILES:
+            continue
+        meaningful.append(p)
+
+    return len(meaningful) > 0
+
+
+def verify_remote_has_main(task_dir: Path) -> bool:
+    """Return True when remote origin has a main branch reference."""
+    rc, out = _run(["git", "ls-remote", "--heads", "origin", "main"], task_dir, timeout=30)
+    return rc == 0 and bool(out.strip())
 
 
 def get_repo_url(task_id: int) -> str:
