@@ -68,17 +68,19 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def run_vercel_deploy(task_dir: Path) -> str | None:
     """
-    Run Vercel CLI to deploy and return the production URL.
-    Tries two strategies:
-      1. With --token (if VERCEL_TOKEN env var is set)
-      2. Without --token (uses ~/.vercel stored credentials from `vercel login`)
+    Run Vercel CLI with the standardized production flow:
+      1) vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+      2) vercel build --prod --token=$VERCEL_TOKEN
+      3) vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
     """
     log_think("Executing Vercel production deployment...", AGENT_NAME)
     append_build_log(task_dir, "Starting Vercel deployment...")
 
+    if not VERCEL_TOKEN:
+        log_warn("VERCEL_TOKEN missing. Deployment requires token-based production flow.", AGENT_NAME)
+        return None
+
     env = os.environ.copy()
-    # Default behavior: do NOT force-link every task into one Vercel project.
-    # This allows framework auto-detection (including plain static HTML/CSS/JS).
     if VERCEL_USE_LINKED_PROJECT and VERCEL_ORG_ID and VERCEL_PROJECT_ID:
         env["VERCEL_ORG_ID"] = VERCEL_ORG_ID
         env["VERCEL_PROJECT_ID"] = VERCEL_PROJECT_ID
@@ -86,7 +88,6 @@ def run_vercel_deploy(task_dir: Path) -> str | None:
     else:
         env.pop("VERCEL_ORG_ID", None)
         env.pop("VERCEL_PROJECT_ID", None)
-        # Remove stale local project link metadata so each task deploy can be auto-detected correctly.
         stale_link_dir = task_dir / ".vercel"
         if stale_link_dir.exists():
             try:
@@ -95,72 +96,77 @@ def run_vercel_deploy(task_dir: Path) -> str | None:
                 pass
         log_think("Using unlinked Vercel deployment mode (framework auto-detection).", AGENT_NAME)
 
-    # Build candidate command lists — token-based first if available
-    candidates = []
-    if VERCEL_TOKEN:
-        candidates.append(["vercel", "--prod", "--yes", "--token", VERCEL_TOKEN])
-    # Always also try without token (works if `vercel login` was run)
-    candidates.append(["vercel", "--prod", "--yes"])
+    def _run(cmd: list[str], timeout: int = 600) -> tuple[int, str]:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(task_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+        output = (proc.stdout + "\n" + proc.stderr).strip()
+        clean_output = ANSI_ESCAPE_RE.sub("", output)
+        safe_cmd = " ".join("--token=$VERCEL_TOKEN" if VERCEL_TOKEN in part else part for part in cmd)
+        log_command(task_dir, safe_cmd, proc.returncode, clean_output)
+        return proc.returncode, clean_output
 
-    last_error_excerpt = ""
-
-    for cmd in candidates:
-        try:
-            proc = subprocess.run(
-                cmd, cwd=str(task_dir), capture_output=True, text=True,
-                timeout=600, env=env,
+    try:
+        rc, _ = _run(["vercel", "--version"], timeout=30)
+        if rc != 0:
+            log_warn("vercel CLI not available. Installing globally...", AGENT_NAME)
+            install = subprocess.run(
+                ["npm", "install", "-g", "vercel"],
+                cwd=str(task_dir),
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
             )
-            output = (proc.stdout + "\n" + proc.stderr).strip()
-            clean_output = ANSI_ESCAPE_RE.sub("", output)
-            log_command(task_dir, " ".join(cmd[:3]), proc.returncode, clean_output)
+            install_out = ANSI_ESCAPE_RE.sub("", (install.stdout + "\n" + install.stderr).strip())
+            log_command(task_dir, "npm install -g vercel", install.returncode, install_out)
+            if install.returncode != 0:
+                append_build_log(task_dir, f"Vercel CLI install failed: {install_out[:600]}")
+                return None
+    except FileNotFoundError:
+        log_warn("npm not found, cannot install vercel CLI.", AGENT_NAME)
+        return None
+    except Exception as e:
+        log_warn(f"Failed to verify/install vercel CLI: {e}", AGENT_NAME)
+        return None
 
-            if proc.returncode == 0:
-                # Prefer explicit "Production:" URL when present.
-                prod_match = re.search(r"Production:\s*(https://[^\s]+)", clean_output)
-                if prod_match:
-                    deployed_url = prod_match.group(1).rstrip(").,")
-                    log_ok(f"Vercel deploy succeeded: {deployed_url}", AGENT_NAME)
-                    return deployed_url
+    commands = [
+        ["vercel", "pull", "--yes", "--environment=production", f"--token={VERCEL_TOKEN}"],
+        ["vercel", "build", "--prod", f"--token={VERCEL_TOKEN}"],
+        ["vercel", "deploy", "--prebuilt", "--prod", f"--token={VERCEL_TOKEN}"],
+    ]
 
-                urls = re.findall(r"https://[^\s)]+", clean_output)
-                vercel_urls = [u.rstrip(").,") for u in urls if "vercel.app" in u]
-                if vercel_urls:
-                    log_ok(f"Vercel deploy succeeded: {vercel_urls[0]}", AGENT_NAME)
-                    return vercel_urls[0]
+    last_output = ""
+    for i, cmd in enumerate(commands):
+        rc, out = _run(cmd, timeout=900 if i == 1 else 600)
+        last_output = out
+        if rc != 0:
+            if i == 0 and not VERCEL_USE_LINKED_PROJECT:
+                log_warn("vercel pull failed in unlinked mode; continuing with build/deploy.", AGENT_NAME)
+                continue
+            append_build_log(task_dir, f"Vercel command failed: {' '.join(cmd[:3])} -> {out[:600]}")
+            return None
 
-                inspect_match = re.search(r"Inspect:\s*(https://[^\s]+)", clean_output)
-                if inspect_match:
-                    log_warn(
-                        "Vercel command succeeded but only Inspect URL was found; missing production URL in CLI output.",
-                        AGENT_NAME,
-                    )
+    prod_match = re.search(r"Production:\s*(https://[^\s]+)", last_output)
+    if prod_match:
+        deployed_url = prod_match.group(1).rstrip(").,")
+        log_ok(f"Vercel deploy succeeded: {deployed_url}", AGENT_NAME)
+        return deployed_url
 
-                log_warn("Vercel exited 0 but no URL found in output.", AGENT_NAME)
-            else:
-                last_error_excerpt = clean_output[:600]
-                log_warn(
-                    f"Vercel attempt failed (rc={proc.returncode}): {last_error_excerpt[:300]}",
-                    AGENT_NAME,
-                )
-        except FileNotFoundError:
-            log_warn("vercel CLI not found. Install with: npm i -g vercel", AGENT_NAME)
-            break
-        except Exception as e:
-            log_warn(f"Vercel execution error: {e}", AGENT_NAME)
+    urls = re.findall(r"https://[^\s)]+", last_output)
+    vercel_urls = [u.rstrip(").,") for u in urls if "vercel.app" in u]
+    if vercel_urls:
+        log_ok(f"Vercel deploy succeeded: {vercel_urls[0]}", AGENT_NAME)
+        return vercel_urls[0]
 
-    if last_error_excerpt:
-        append_build_log(task_dir, f"Final Vercel failure excerpt: {last_error_excerpt}")
-    log_warn(
-        "Vercel deployment failed. Configure VERCEL_TOKEN in the running service environment (systemd EnvironmentFile) "
-        "or run `vercel login` as that service user.",
-        AGENT_NAME,
-    )
+    append_build_log(task_dir, f"Vercel deploy output missing vercel.app URL: {last_output[:600]}")
+    log_warn("Vercel deploy completed but no public URL was found in output.", AGENT_NAME)
     return None
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SMOKE TESTING
-# ═══════════════════════════════════════════════════════════════════════════
 
 def smoke_test(url: str, retries: int = 3, wait: int = 10) -> tuple[bool, str]:
     """
@@ -469,3 +475,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

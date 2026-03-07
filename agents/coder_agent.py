@@ -1,5 +1,5 @@
-﻿"""
-Oriexa Coder Agent â€” Shell-Based, Step-by-Step Code Generator
+"""
+Oriexa Coder Agent — Shell-Based, Step-by-Step Code Generator
 
 Multi-step agent that:
   1. Creates a GitHub repo FIRST
@@ -55,9 +55,9 @@ AGENT_NAME = "Coder"
 WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# PROGRESS EMITTER â€” writes ProgressStep JSON to progress.jsonl
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
+# PROGRESS EMITTER — writes ProgressStep JSON to progress.jsonl
+# ═══════════════════════════════════════════════════════════════════════════
 
 import time as _time
 
@@ -102,9 +102,9 @@ def write_progress(
         log_warn(f"Failed to write progress: {e}", AGENT_NAME)
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# STEP 1: PLAN â€” Break the task into implementation steps
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
+# STEP 1: PLAN — Break the task into implementation steps
+# ═══════════════════════════════════════════════════════════════════════════
 
 def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "", poster_context: str = "", complexity: str = "high") -> list[dict]:
     """
@@ -126,25 +126,25 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "You are a world-class Software Architect AI agent. "
         "Given a task, you break it into implementable steps with DETAILED descriptions. "
         "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n\n"
-        "CRITICAL â€” PROJECT TYPE RULES (STRICTLY ENFORCED):\n"
+        "CRITICAL — PROJECT TYPE RULES (STRICTLY ENFORCED):\n"
         "- ALWAYS prioritize the latest versions of all technologies, frameworks, and tools.\n"
         "- CRITICAL: ALWAYS use the '@latest' tag for npx/npm/pip commands and specify 'latest' for all dependency versions in package.json/requirements.txt. NEVER use specific version numbers unless absolutely necessary to fix a known bug.\n"
         "- BE PROACTIVE: If you encounter an error, version conflict, or build failure, RESOLVE IT WHATEVER IT TAKES. You are empowered to change the project structure, switch tools, or adopt a completely different technical approach to bypass the blocker.\n"
         "- You MUST ONLY use JavaScript/TypeScript frontend or fullstack frameworks.\n"
         "- DEFAULT to 'nextjs' for ALL tasks: websites, web apps, dashboards, "
-        "landing pages, portfolios, e-commerce, SaaS, tools with a UI, APIs, backends â€” everything.\n"
+        "landing pages, portfolios, e-commerce, SaaS, tools with a UI, APIs, backends — everything.\n"
         "- Use 'react' ONLY if the task explicitly says 'React without Next.js' or 'Vite + React'.\n"
         "- Use 'vite' ONLY if the task explicitly specifies Vite as the build tool.\n"
         "- Use 'static' ONLY for pure HTML/CSS/JS with absolutely no framework needed "
         "(e.g. the user asks for vanilla JS, plain HTML page, or a simple static site).\n"
-        "- NEVER use 'python' â€” Python is FORBIDDEN as a project type.\n"
-        "- NEVER use 'node' standalone â€” if backend is needed, use Next.js API routes.\n"
+        "- NEVER use 'python' — Python is FORBIDDEN as a project type.\n"
+        "- NEVER use 'node' standalone — if backend is needed, use Next.js API routes.\n"
         "- Backend logic MUST live inside the framework (Next.js API routes, server actions).\n"
-        "- NO external database connections â€” use in-memory state or localStorage only.\n"
+        "- NO external database connections — use in-memory state or localStorage only.\n"
         "- When in doubt: choose 'nextjs'. It is ALWAYS the safe default. The NEXTJS framework MUST be prioritized before you proceed with implementation.\n"
         "- For 'nextjs' always use scaffold_command: "
         "'npx create-next-app@latest ./ --typescript --tailwind --eslint --app --no-src-dir --import-alias @/* --yes --force'\n\n"
-        "CRITICAL â€” STEP DESCRIPTION RULES:\n"
+        "CRITICAL — STEP DESCRIPTION RULES:\n"
         "- Each step's 'description' MUST be a DETAILED paragraph (3-5 sentences minimum) "
         "explaining exactly what to implement, the visual design, behavior, and any edge cases.\n"
         "- For STATIC (vanilla HTML/CSS/JS) projects: describe the EXACT HTML structure, "
@@ -156,7 +156,7 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "animations, and API routes if needed. Each step must produce a COMPLETE, polished feature.\n"
         "- NEVER have vague descriptions like 'Set up project'. Instead: 'Create the root layout "
         "with Inter font, dark theme support, global CSS variables, and a responsive container'.\n\n"
-        "CRITICAL â€” FILE LIST RULES:\n"
+        "CRITICAL — FILE LIST RULES:\n"
         "- Every step MUST list at least 2 files to create.\n"
         "- Each file must have a 'path' (relative) and 'description' (detailed: what it renders, "
         "what styles it applies, what interactivity it provides).\n"
@@ -192,12 +192,12 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
 
     result = llm_json(system, user, max_tokens=2048, complexity=complexity, provider="claude-sonnet")
 
-    # â”€â”€ Post-processing: enforce project type and scaffold â”€â”€
+    # ── Post-processing: enforce project type and scaffold ──
     if isinstance(result, dict):
         project_type = (result.get("project_type") or "").lower().strip()
         # Force nextjs for forbidden types
         if project_type in ("node", "python", "express", "flask", "django", "") or project_type not in ("nextjs", "react", "vite", "static"):
-            log_warn(f"Plan used forbidden project_type '{project_type}' â€” forcing 'nextjs'", AGENT_NAME)
+            log_warn(f"Plan used forbidden project_type '{project_type}' — forcing 'nextjs'", AGENT_NAME)
             result["project_type"] = "nextjs"
             result["scaffold_command"] = "npx create-next-app@latest ./ --typescript --tailwind --eslint --app --no-src-dir --import-alias @/* --yes --force"
 
@@ -256,7 +256,7 @@ def generate_step_code(
         "- Every file MUST have COMPLETE, REAL, WORKING code. NEVER return empty content.\n"
         "- For HTML files: include DOCTYPE, full head section with meta, title, linked stylesheets, "
         "and a complete body with semantic structure. The page must be visually appealing.\n"
-        "- For CSS files: include a full design system â€” colors, typography, spacing, responsive "
+        "- For CSS files: include a full design system — colors, typography, spacing, responsive "
         "breakpoints, hover effects, transitions. Make it look PROFESSIONAL, not bare-bones.\n"
         "- For JS files: include complete logic with proper error handling, event listeners, "
         "DOM manipulation, and comments explaining complex sections.\n"
@@ -264,7 +264,7 @@ def generate_step_code(
         "proper imports, hooks, responsive Tailwind classes, and accessible HTML.\n"
         "- NEVER use placeholder text like 'TODO' or 'Add your code here'. Write the actual code.\n"
         "- NEVER import components or modules that don't exist in the project.\n"
-        "- All code must be SELF-CONTAINED and FUNCTIONAL â€” it should work immediately."
+        "- All code must be SELF-CONTAINED and FUNCTIONAL — it should work immediately."
     )
     if skill_contents:
         system += "\n\nYOU MUST STRICTLY FOLLOW THESE CAPABILITY SKILLS:\n\n" + "\n\n---\n\n".join(skill_contents)
@@ -283,7 +283,7 @@ def generate_step_code(
         f"Files to create in THIS step:\n{files_desc}\n\n"
         "Return JSON: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n\n"
         "IMPORTANT REMINDERS:\n"
-        "- Each file's 'content' MUST be complete, working source code â€” NOT fragments.\n"
+        "- Each file's 'content' MUST be complete, working source code — NOT fragments.\n"
         "- For static projects: HTML must be a full valid document with linked CSS/JS.\n"
         "- For Next.js/React: components must compile cleanly with proper imports and types.\n"
         "- Write code that a developer would be PROUD to ship. Quality over speed."
@@ -336,15 +336,15 @@ def generate_step_code(
     return valid_files
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# SKILL LOADER â€” Loads relevant skills based on task characteristics
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
+# SKILL LOADER — Loads relevant skills based on task characteristics
+# ═══════════════════════════════════════════════════════════════════════════
 
-# Map of keyword patterns â†’ skill SKILL.md file names to include
+# Map of keyword patterns → skill SKILL.md file names to include
 _SKILL_KEYWORD_MAP: list[tuple[list[str], list[str]]] = [
     # Frontend / React / Next.js
     (["react", "next", "nextjs", "frontend", "ui", "dashboard", "landing", "tailwind", "component"],
-     ["react-best-practices", "composition-patterns", "frontend-design", "senior-frontend"]),
+     ["react-best-practices", "composition-patterns", "frontend-design", "senior-frontend", "vercel-deploy"]),
     # Backend / API
     (["api", "backend", "server", "fastapi", "flask", "express", "rest", "graphql", "database", "sql", "postgres"],
      ["senior-backend", "senior-architect"]),
@@ -368,9 +368,8 @@ _SKILL_KEYWORD_MAP: list[tuple[list[str], list[str]]] = [
 
 def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -> list[str]:
     """
-    Load relevant skill files from:
-      1. f:/Oriexa/Oriexa/skills/*.md  (Oriexa API skills)
-      2. f:/Oriexa/oriexa-api/.claude/skills/<name>/SKILL.md  (code quality skills)
+    Load relevant skill files from repo-local paths first, with legacy Windows
+    absolute path fallbacks.
 
     Selects skills based on task keywords to avoid overloading the prompt.
     """
@@ -384,11 +383,27 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
             selected_skill_names.update(skill_names)
 
     contents: list[str] = []
+    repo_root = Path(__file__).resolve().parent.parent
 
-    # 1. Load Oriexa API skill files (all of them â€” they're small)
-    api_skills_dir = Path("f:/Oriexa/Oriexa/skills")
-    if api_skills_dir.exists():
+    api_skills_candidates = [
+        repo_root / "skills",
+        Path("f:/Oriexa/Oriexa/skills"),  # legacy fallback
+    ]
+    claude_skills_candidates = [
+        repo_root / ".claude" / "skills",
+        Path("f:/Oriexa/oriexa-api/.claude/skills"),  # legacy fallback
+    ]
+
+    # 1. Load API skill markdown files (all of them if present)
+    seen_api_files: set[Path] = set()
+    for api_skills_dir in api_skills_candidates:
+        if not api_skills_dir.exists():
+            continue
         for md_file in sorted(api_skills_dir.glob("*.md")):
+            resolved = md_file.resolve()
+            if resolved in seen_api_files:
+                continue
+            seen_api_files.add(resolved)
             try:
                 text = md_file.read_text(encoding="utf-8")
                 if text.strip():
@@ -396,21 +411,26 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
             except Exception:
                 pass
 
-    # 2. Load selected .claude/skills/ from oriexa-api repo
-    claude_skills_dir = Path("f:/Oriexa/oriexa-api/.claude/skills")
-    if claude_skills_dir.exists():
+    # 2. Load selected .claude skills
+    loaded_skill_names: set[str] = set()
+    for claude_skills_dir in claude_skills_candidates:
+        if not claude_skills_dir.exists():
+            continue
         for skill_name in sorted(selected_skill_names):
+            if skill_name in loaded_skill_names:
+                continue
             skill_file = claude_skills_dir / skill_name / "SKILL.md"
-            if skill_file.exists():
-                try:
-                    text = skill_file.read_text(encoding="utf-8")
-                    # Trim to avoid token overflow â€” take first 1500 chars
-                    if len(text) > 1500:
-                        text = text[:1500] + "\n... [truncated for token limit]"
-                    if text.strip():
-                        contents.append(f"### Claude Skill: {skill_name}\n\n{text}")
-                except Exception:
-                    pass
+            if not skill_file.exists():
+                continue
+            try:
+                text = skill_file.read_text(encoding="utf-8")
+                if len(text) > 1500:
+                    text = text[:1500] + "\n... [truncated for token limit]"
+                if text.strip():
+                    contents.append(f"### Claude Skill: {skill_name}\n\n{text}")
+                    loaded_skill_names.add(skill_name)
+            except Exception:
+                pass
 
     total_chars = sum(len(c) for c in contents)
     log_think(
@@ -420,10 +440,9 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
     )
     return contents
 
-
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# FIX-ONLY MODE â€” Targeted error repair (no full re-gen)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
+# FIX-ONLY MODE — Targeted error repair (no full re-gen)
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _fix_build_errors(
     error_output: str,
@@ -483,7 +502,7 @@ def _fix_build_errors(
     system = (
         "You are a Senior Developer fixing build errors. "
         "You will receive error output and the current source files. "
-        "Fix ONLY the errors â€” do NOT rewrite files from scratch. "
+        "Fix ONLY the errors — do NOT rewrite files from scratch. "
         "Keep all existing functionality intact. Only modify what's broken. "
         "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n"
         "Return: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n"
@@ -521,9 +540,9 @@ def _fix_build_errors(
     return valid_files
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN PROCESS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 def process_task(client: OriexaClient, task_id: int) -> dict:
     try:
@@ -589,7 +608,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         reqs = task.get("requirements") or ""
         past_errors = state.get("test_errors", "")
 
-        # â”€â”€ Progressive Intelligence Escalation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Progressive Intelligence Escalation ──────────────────────
         # Iteration 0: high (default)
         # Iteration 1: high (same model, targeted fix)
         # Iteration 2+: extreme (upgrade to best available model)
@@ -598,7 +617,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             log_warn(f"Escalating to 'extreme' intelligence (iteration {iteration})", AGENT_NAME)
             plan_complexity = "extreme"
 
-        # â”€â”€ Fetch poster conversation context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Fetch poster conversation context ────────────────────────
         poster_context = ""
         try:
             messages = client.get_task_messages(task_id) or []
@@ -630,7 +649,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         except Exception as e:
             log_warn(f"Could not fetch poster conversation: {e}", AGENT_NAME)
 
-        # â”€â”€ STEP 1: Git Repo (Create FIRST, before any code) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── STEP 1: Git Repo (Create FIRST, before any code) ──────────
         log_think(f"Initializing Git repo for task #{task_id}...", AGENT_NAME)
         append_build_log(task_dir, f"=== Coder Agent starting for task #{task_id} ===")
 
@@ -647,14 +666,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         else:
             return {"action": "error", "error": "GitHub repository creation/push failed"}
 
-        # â”€â”€ STEP 3: Plan the implementation (ONCE â€” never re-plan) â”€â”€â”€
+        # ── STEP 3: Plan the implementation (ONCE — never re-plan) ───
         if not state.get("plan"):
-            log_think("Planning implementation (Claude Sonnet â€” one-time plan)...", AGENT_NAME)
+            log_think("Planning implementation (Claude Sonnet — one-time plan)...", AGENT_NAME)
             write_progress(task_dir, task_id, "planning", "Analyzing requirements",
                            "Breaking task into implementation steps",
                            "Architecting solution with Claude Sonnet...", 5.0)
 
-            # Always use claude-sonnet for the plan â€” this only runs once
+            # Always use claude-sonnet for the plan — this only runs once
             plan = plan_implementation(title, desc, reqs, "", poster_context, complexity="high")
             if not plan or not plan.get("steps"):
                 log_warn("Planning failed, falling back to single-step approach.", AGENT_NAME)
@@ -681,14 +700,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             total = len(plan.get("steps", []))
             step_names = [s.get("description", f"Step {s.get('step_number', i+1)}") for i, s in enumerate(plan.get("steps", []))]
             write_progress(task_dir, task_id, "planning", "Implementation plan ready",
-                           f"{total} steps planned: {' â†’ '.join(step_names[:4])}{'...' if total > 4 else ''}",
+                           f"{total} steps planned: {' → '.join(step_names[:4])}{'...' if total > 4 else ''}",
                            f"Project type: {plan.get('project_type', 'unknown')}, {total} implementation steps",
                            10.0, metadata={"steps": total, "project_type": plan.get("project_type", "unknown")})
         else:
             plan = state["plan"]
-            log_think(f"Resuming plan â€” {len(state.get('completed_steps', []))} of {state['total_steps']} steps done.", AGENT_NAME)
+            log_think(f"Resuming plan — {len(state.get('completed_steps', []))} of {state['total_steps']} steps done.", AGENT_NAME)
 
-        # â”€â”€ STEP 3: Scaffold (if needed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── STEP 3: Scaffold (if needed) ──────────────────────────────
         scaffold_cmd = plan.get("scaffold_command")
         if scaffold_cmd and not state.get("scaffolded"):
             log_think(f"Scaffolding project: {scaffold_cmd}", AGENT_NAME)
@@ -697,7 +716,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                            "Setting up project structure and boilerplate",
                            f"Running: {scaffold_cmd[:80]}", 15.0)
 
-            # â”€â”€ Clean up conflicting files before scaffolding â”€â”€
+            # ── Clean up conflicting files before scaffolding ──
             # create-next-app fails if the directory is not empty.
             # We must move or remove files except state and lock.
             log_think("Cleaning up task directory for scaffolding...", AGENT_NAME)
@@ -730,7 +749,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["scaffolded"] = True  # Don't retry
                 _save_state(state_file, state)
 
-        # â”€â”€ STEP 4: Architectural blueprint (cached â€” only generate once) â”€
+        # ── STEP 4: Architectural blueprint (cached — only generate once) ─
         enhanced_blueprint = state.get("cached_blueprint", "")
         if not enhanced_blueprint:
             log_think("Generating architectural blueprint (one-time, Claude)...", AGENT_NAME)
@@ -748,10 +767,10 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         else:
             log_think("Using cached architectural blueprint (skipping LLM call)", AGENT_NAME)
 
-        # Load skills â€” from the Oriexa skills dir AND from .claude/skills/ in both repos
+        # Load skills — from the Oriexa skills dir AND from .claude/skills/ in both repos
         skill_contents = _load_skills_for_task(title, desc, reqs, plan)
 
-        # â”€â”€ STEP 5: Execute steps OR fix errors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── STEP 5: Execute steps OR fix errors ────────────────────────
         steps = plan.get("steps", [])
         completed_step_nums = {s["step_number"] for s in state.get("completed_steps", [])}
         existing_files = []
@@ -760,12 +779,12 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         for s in state.get("completed_steps", []):
             existing_files.extend(s.get("files_written", []))
 
-        # â”€â”€ FIX-ONLY MODE: If we have test_errors AND all steps are done,
+        # ── FIX-ONLY MODE: If we have test_errors AND all steps are done,
         #    only fix the broken files instead of regenerating everything.
         if past_errors and len(completed_step_nums) == len(steps) and len(completed_step_nums) > 0:
             log_think(f"Fix-only mode: all {len(steps)} steps already completed. Fixing build errors...", AGENT_NAME)
             write_progress(task_dir, task_id, "execution", "Fixing build errors",
-                           "Targeted fix â€” only rewriting files with errors",
+                           "Targeted fix — only rewriting files with errors",
                            "Analyzing error output to identify broken files...", 75.0)
 
             fix_files = _fix_build_errors(
@@ -802,7 +821,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 return {"action": "error", "error": "fix_only_no_files_reset_state"}
 
         else:
-            # â”€â”€ Normal mode: execute remaining steps â”€â”€
+            # ── Normal mode: execute remaining steps ──
             for step in steps:
                 step_num = step.get("step_number", 0)
                 if step_num in completed_step_nums:
@@ -829,7 +848,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 )
 
                 if not files:
-                    log_warn(f"Step {step_num} generated no files â€” skipping.", AGENT_NAME)
+                    log_warn(f"Step {step_num} generated no files — skipping.", AGENT_NAME)
                     continue
 
                 files_written = []
@@ -868,7 +887,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["files"].extend(files)
                 _save_state(state_file, state)
 
-        # â”€â”€ STEP 6: Install dependencies â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── STEP 6: Install dependencies ──────────────────────────────
         if (task_dir / "package.json").exists():
             log_think("Installing npm dependencies...", AGENT_NAME)
             write_progress(task_dir, task_id, "review", "Installing dependencies",
@@ -884,7 +903,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             else:
                 log_warn(f"npm install failed (rc={rc})", AGENT_NAME)
 
-        # â”€â”€ STEP 7: Final push â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── STEP 7: Final push ────────────────────────────────────────
         write_progress(task_dir, task_id, "delivery", "Pushing code",
                        "Pushing all commits to GitHub repository",
                        f"Pushing to {state.get('repo_url', 'GitHub')}...", 90.0)
@@ -917,7 +936,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                        f"Repository: {state.get('repo_url', 'local git')}",
                        95.0, metadata={"repo_url": state.get("repo_url", "")})
 
-        # â”€â”€ Transition to testing (NEVER wipe plan or completed steps) â”€
+        # ── Transition to testing (NEVER wipe plan or completed steps) ─
         state["status"] = "testing"
         state["iterations"] = iteration + 1
         _save_state(state_file, state)
@@ -926,7 +945,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         total_commits = len(state.get("commit_log", []))
 
         log_ok(
-            f"Coding complete for task #{task_id} â€” "
+            f"Coding complete for task #{task_id} — "
             f"{total_files} files, {total_commits} commits, "
             f"{len(state.get('completed_steps', []))} steps",
             AGENT_NAME
@@ -952,9 +971,9 @@ def _save_state(state_file: Path, state: dict):
         json.dump(state, f, indent=2)
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # CLI
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser()
@@ -969,4 +988,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
