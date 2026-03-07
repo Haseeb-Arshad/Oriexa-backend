@@ -392,10 +392,16 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
         )
 
     contents: list[str] = []
+    loaded_sections: list[str] = []
     repo_root = Path(__file__).resolve().parent.parent
     env_skill_dirs = [
         Path(p.strip())
         for p in (os.environ.get("ORIEXA_SKILLS_DIRS", "") or "").split(",")
+        if p.strip()
+    ]
+    env_claude_skill_dirs = [
+        Path(p.strip())
+        for p in (os.environ.get("ORIEXA_CLAUDE_SKILLS_DIRS", "") or "").split(",")
         if p.strip()
     ]
 
@@ -403,12 +409,13 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
         repo_root / "skills",
         repo_root.parent / "Oriexa" / "skills",
         repo_root.parent / "oriexa" / "skills",
-        Path("f:/Oriexa/Oriexa/skills"),  # legacy fallback
         *env_skill_dirs,
     ]
     claude_skills_candidates = [
         repo_root / ".claude" / "skills",
-        Path("f:/Oriexa/oriexa-api/.claude/skills"),  # legacy fallback
+        repo_root.parent / "Oriexa" / ".claude" / "skills",
+        repo_root.parent / "oriexa" / ".claude" / "skills",
+        *env_claude_skill_dirs,
     ]
 
     # 1. Load API skill markdown files (all of them if present)
@@ -425,6 +432,7 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
                 text = md_file.read_text(encoding="utf-8")
                 if text.strip():
                     contents.append(f"### Oriexa API Skill: {md_file.stem}\n\n{text}")
+                    loaded_sections.append(md_file.stem)
             except Exception:
                 pass
 
@@ -446,13 +454,16 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
                 if text.strip():
                     contents.append(f"### Claude Skill: {skill_name}\n\n{text}")
                     loaded_skill_names.add(skill_name)
+                    loaded_sections.append(skill_name)
             except Exception:
                 pass
 
     total_chars = sum(len(c) for c in contents)
+    loaded_preview = ", ".join(loaded_sections[:8]) if loaded_sections else "none"
     log_think(
         f"Loaded {len(contents)} skill sections "
-        f"({total_chars // 1000}k chars): {', '.join(list(selected_skill_names)[:6])}",
+        f"({total_chars // 1000}k chars). Selected={', '.join(list(selected_skill_names)[:6])} "
+        f"Loaded={loaded_preview}",
         AGENT_NAME,
     )
     return contents

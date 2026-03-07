@@ -387,6 +387,12 @@ class SwarmOrchestrator:
             elif pipeline_stage == "deploying":
                 agent_name = "Deployer"
                 script = DEPLOY_SCRIPT
+            elif pipeline_stage == "failed":
+                log_warn(
+                    f"Task #{task_id} pipeline is in failed state; skipping auto-retry",
+                    ORCH,
+                )
+                continue
             else:
                 log_warn(f"Unknown pipeline stage '{pipeline_stage}' for Task #{task_id}", ORCH)
                 continue

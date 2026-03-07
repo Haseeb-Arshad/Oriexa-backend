@@ -227,6 +227,9 @@ def _smoke_test_curl(url: str, retries: int, wait: int) -> tuple[bool, str]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def process_task(client: OriexaClient, task_id: int) -> dict:
+    task_dir: Path | None = None
+    state_file: Path | None = None
+    state: dict | None = None
     try:
         task_dir = WORKSPACE_DIR / f"task_{task_id}"
         state_file = task_dir / ".swarm_state.json"
@@ -247,14 +250,33 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                        "Running Vercel production deployment",
                        "Initializing deployment pipeline...", 96.0, subtask_id=101)
 
+        def fail(error_message: str) -> dict:
+            append_build_log(task_dir, f"DEPLOY FAILED: {error_message}")
+            write_progress(
+                task_dir,
+                task_id,
+                "failed",
+                "Deployment failed",
+                error_message,
+                "Deployment halted. Manual intervention required.",
+                100.0,
+                subtask_id=101,
+            )
+            state["status"] = "failed"
+            state["error"] = error_message
+            state["failed_at"] = time.time()
+            with open(state_file, "w") as f:
+                json.dump(state, f, indent=2)
+            return {"action": "error", "error": error_message}
+
         if not repo_url or "No Repo URL" in repo_url:
-            return {"action": "error", "error": "Missing GitHub repository URL; deployment blocked"}
+            return fail("Missing GitHub repository URL; deployment blocked")
         if not has_meaningful_implementation(task_dir):
-            return {"action": "error", "error": "No meaningful implementation files in repository; deployment blocked"}
+            return fail("No meaningful implementation files in repository; deployment blocked")
         if not verify_remote_has_main(task_dir):
             push_to_remote(task_dir)
             if not verify_remote_has_main(task_dir):
-                return {"action": "error", "error": "GitHub remote main branch missing; deployment blocked"}
+                return fail("GitHub remote main branch missing; deployment blocked")
 
         # ── Deploy to Vercel ──────────────────────────────────────────
         vercel_url = run_vercel_deploy(task_dir)
@@ -299,27 +321,21 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     else:
                         log_warn("Retry smoke test also FAILED.", AGENT_NAME)
                         state["vercel_url"] = vercel_url_retry
-                        return {
-                            "action": "error",
-                            "error": (
-                                "Deployment URL is not publicly reachable after retry "
-                                f"({details2}). Disable Vercel protection/private access settings."
-                            ),
-                        }
+                        return fail(
+                            "Deployment URL is not publicly reachable after retry "
+                            f"({details2}). Disable Vercel protection/private access settings."
+                        )
                 else:
-                    return {
-                        "action": "error",
-                        "error": (
-                            "Deployment URL is not publicly reachable "
-                            f"({details}). Disable Vercel protection/private access settings."
-                        ),
-                    }
+                    return fail(
+                        "Deployment URL is not publicly reachable "
+                        f"({details}). Disable Vercel protection/private access settings."
+                    )
         else:
             log_warn("Vercel deployment skipped or failed.", AGENT_NAME)
             vercel_url = None
 
         if not vercel_url:
-            return {"action": "error", "error": "Vercel deployment failed; deliverable submission blocked"}
+            return fail("Vercel deployment failed; deliverable submission blocked")
 
         # ── Commit deploy results ─────────────────────────────────────
         deploy_summary = {
@@ -459,6 +475,26 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
     except Exception as e:
         log_err(f"Exception during deployment: {e}")
         log_err(traceback.format_exc().strip().splitlines()[-1])
+        try:
+            if task_dir and state_file and state_file.exists():
+                if state is None:
+                    state = json.loads(state_file.read_text(encoding="utf-8"))
+                state["status"] = "failed"
+                state["error"] = str(e)
+                state["failed_at"] = time.time()
+                state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+                write_progress(
+                    task_dir,
+                    task_id,
+                    "failed",
+                    "Deployment failed",
+                    str(e),
+                    "Unhandled deploy exception",
+                    100.0,
+                    subtask_id=101,
+                )
+        except Exception:
+            pass
         return {"action": "error", "error": str(e)}
 
 

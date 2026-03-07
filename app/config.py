@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     TASK_POLL_INTERVAL: int = 30  # seconds
     SANDBOX_TIMEOUT: int = 120  # seconds
     WORKSPACE_ROOT: str = "/tmp/oriexa-workspaces"
+    AGENT_WORKSPACE_DIR: str = "/tmp/oriexa-agent-works"
     ALLOWED_COMMANDS: str = "python,node,npm,npx,pip,git,gh,ls,cat,head,tail,grep,find,mkdir,cp,mv,rm,touch,echo,curl,wget,tsc,eslint,flake8,pytest,make,sh,bash,cd,pwd,which,env,sort,uniq,wc,tr,cut,sed,awk,diff,patch,tar,gzip,unzip,ssh-keygen,openssl,jq,xargs"
     BLOCKED_PATTERNS: str = "sudo,su ,chmod 777,rm -rf /,> /etc,> /dev"
 

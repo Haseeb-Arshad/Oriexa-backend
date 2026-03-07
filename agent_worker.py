@@ -1042,6 +1042,11 @@ class AutonomousWorkerAgent:
 
                 pipeline_stage = _get_pipeline_stage(task_dir)
                 log_think(f"  Task #{task_id}: pipeline stage = '{pipeline_stage}'")
+                if pipeline_stage == "failed":
+                    log_warn(
+                        f"Task #{task_id} pipeline marked failed; skipping auto-retry until manual restart"
+                    )
+                    continue
 
                 # ── CODER stage ────────────────────────────────────────────
                 if pipeline_stage == "coding":

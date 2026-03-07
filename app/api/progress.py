@@ -191,12 +191,18 @@ async def _resolve_legacy_progress_file(execution_id: int) -> Path | None:
     if execution.workspace_path:
         candidates.append(Path(execution.workspace_path) / "progress.jsonl")
 
-    root = Path(settings.WORKSPACE_ROOT)
-    candidates.extend([
-        root / f"task-{execution_id}" / "progress.jsonl",
-        root / f"task_{execution_id}" / "progress.jsonl",
-        root / f"task_{execution.oriexa_task_id}" / "progress.jsonl",
-    ])
+    workspace_roots = {
+        Path(settings.WORKSPACE_ROOT),
+        Path(settings.AGENT_WORKSPACE_DIR),
+        Path(__file__).resolve().parents[2] / "agent_works",
+    }
+    for root in workspace_roots:
+        candidates.extend([
+            root / f"task-{execution_id}" / "progress.jsonl",
+            root / f"task_{execution_id}" / "progress.jsonl",
+            root / f"task-{execution.oriexa_task_id}" / "progress.jsonl",
+            root / f"task_{execution.oriexa_task_id}" / "progress.jsonl",
+        ])
 
     for c in candidates:
         if c.exists():
