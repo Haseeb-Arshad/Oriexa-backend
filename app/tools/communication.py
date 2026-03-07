@@ -68,6 +68,36 @@ async def post_question(
 
     client = _get_client()
 
+    # Deduplicate questions: if an equivalent question already exists for this task,
+    # reuse it instead of posting another copy.
+    existing = await client._request("GET", f"/tasks/{task_id}/messages")
+    if isinstance(existing, list):
+        normalized_content = _normalize_question_text(content)
+        normalized_options = _normalize_options(options)
+        for msg in reversed(existing):
+            if msg.get("message_type") != "question":
+                continue
+            if msg.get("sender_type") != "agent":
+                continue
+            if _normalize_question_text(str(msg.get("content", ""))) != normalized_content:
+                continue
+
+            existing_structured = msg.get("structured_data") or {}
+            if str(existing_structured.get("question_type", "")) != question_type:
+                continue
+            if question_type == "multiple_choice":
+                existing_opts = _normalize_options(existing_structured.get("options"))
+                if existing_opts != normalized_options:
+                    continue
+
+            already_answered = bool(existing_structured.get("response")) or bool(existing_structured.get("responded_at"))
+            return {
+                "ok": True,
+                "message_id": msg.get("id"),
+                "deduped": True,
+                "already_answered": already_answered,
+            }
+
     logger.info(
         "post_question: task_id=%d type=%s content_length=%d",
         task_id, question_type, len(content),
@@ -87,7 +117,12 @@ async def post_question(
         return {"ok": False, "error": f"Failed to post question for task {task_id}. API request failed."}
 
     message_id = result.get("id")
-    return {"ok": True, "message_id": message_id}
+    return {
+        "ok": True,
+        "message_id": message_id,
+        "deduped": False,
+        "already_answered": False,
+    }
 
 
 @tool
@@ -158,3 +193,13 @@ async def read_task_messages(
         ]
 
     return {"ok": True, "messages": messages}
+
+
+def _normalize_question_text(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def _normalize_options(options: Any) -> list[str]:
+    if not isinstance(options, list):
+        return []
+    return [" ".join(str(opt).strip().lower().split()) for opt in options]

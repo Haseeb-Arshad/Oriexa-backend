@@ -222,6 +222,13 @@ class TaskPickerDaemon:
                         logger.info("Skipping non-coding webhook task %d", task_id)
                         return
 
+                    if await self._has_pending_clarification_questions(task_id):
+                        logger.info(
+                            "Skipping auto-claim for task %d because clarification is still pending",
+                            task_id,
+                        )
+                        return
+
                     # Check not already tracked
                     async with async_session() as session:
                         result = await session.execute(
@@ -396,6 +403,26 @@ class TaskPickerDaemon:
             )
             await session.commit()
 
+    async def _has_pending_clarification_questions(self, task_id: int) -> bool:
+        """Return True if the task already has unanswered agent clarification questions."""
+        try:
+            result = await self.client._request("GET", f"/tasks/{task_id}/messages")
+        except Exception as exc:
+            logger.debug("Could not fetch messages for task %d: %s", task_id, exc)
+            return False
+
+        messages = result if isinstance(result, list) else []
+        for msg in messages:
+            if msg.get("message_type") != "question":
+                continue
+            if msg.get("sender_type") != "agent":
+                continue
+            structured = msg.get("structured_data") or {}
+            if structured.get("responded_at") or structured.get("response"):
+                continue
+            return True
+        return False
+
     # -- Polling loop --
 
     async def _poll_loop(self) -> None:
@@ -445,6 +472,14 @@ class TaskPickerDaemon:
                     "Skipping non-coding task %d: %s",
                     task_data.get("id", 0),
                     task_data.get("title", "Untitled")[:80],
+                )
+                continue
+
+            task_id = int(task_data.get("id", 0))
+            if task_id and await self._has_pending_clarification_questions(task_id):
+                logger.info(
+                    "Skipping auto-claim for task %d because clarification is still pending",
+                    task_id,
                 )
                 continue
 

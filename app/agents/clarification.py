@@ -50,6 +50,23 @@ class ClarificationAgent(BaseAgent):
         task_description = json.dumps(task_data, indent=2, default=str)
         triage_reasoning = state.get("triage_reasoning", "No triage reasoning available.")
         clarity_score = state.get("clarity_score", 0.5)
+        existing_messages = await _fetch_task_messages(task_id)
+        existing_question_state = _extract_existing_question_state(existing_messages)
+
+        if existing_question_state["pending_ids"]:
+            summary = (
+                f"Reusing {len(existing_question_state['pending_ids'])} existing pending "
+                "clarification question(s); not posting duplicates."
+            )
+            logger.info("ClarificationAgent: %s", summary)
+            return {
+                "questions": [summary],
+                "clarification_needed": True,
+                "clarification_message_id": existing_question_state["pending_ids"][-1],
+                "clarification_message_ids": existing_question_state["pending_ids"],
+                "question_summary": summary,
+                **self.get_token_usage(),
+            }
 
         clarification_prompt = (
             "Analyse the task below. Identify 1-3 critical ambiguities and post "
@@ -60,8 +77,12 @@ class ClarificationAgent(BaseAgent):
             "- Call post_question once per question (up to 3 questions).\n"
             "- Prefer multiple_choice and yes_no over text_input — they're faster to answer.\n"
             "- Each question content must be a direct, specific question.\n\n"
+            "IMPORTANT DEDUP RULE:\n"
+            "- Never ask a question already asked before (whether answered or pending).\n"
+            "- If prior answers already cover the ambiguity, do not ask again.\n\n"
             f"Task ID: {task_id}\n"
             f"Triage assessment (clarity score: {clarity_score:.2f}):\n{triage_reasoning}\n\n"
+            f"Previously answered clarification items:\n{_format_answered(existing_question_state['answered_items'])}\n\n"
             f"Task data:\n{task_description}\n\n"
             "After posting all questions, return a JSON summary:\n"
             '{"clarification_needed": true, "question_summary": "brief description of all questions asked"}\n\n'
@@ -75,6 +96,7 @@ class ClarificationAgent(BaseAgent):
         ]
 
         sent_message_ids: list[int] = []
+        pending_message_ids: list[int] = []
 
         # ReAct loop
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -112,6 +134,8 @@ class ClarificationAgent(BaseAgent):
                     mid = tool_result.get("message_id")
                     if mid is not None:
                         sent_message_ids.append(mid)
+                        if not bool(tool_result.get("already_answered", False)):
+                            pending_message_ids.append(mid)
                         logger.info("ClarificationAgent: posted question message_id=%d", mid)
 
                 messages.append(
@@ -125,21 +149,25 @@ class ClarificationAgent(BaseAgent):
         # Parse the final response for summary
         result = _parse_result(response.content if hasattr(response, "content") else "")
         question_summary = result.get("question_summary", "Clarification questions posted")
-        clarification_needed = result.get("clarification_needed", len(sent_message_ids) > 0)
+        if pending_message_ids:
+            clarification_needed = True
+        else:
+            clarification_needed = False
 
         # Use the last message_id for polling (user responds to the last question)
-        last_message_id = sent_message_ids[-1] if sent_message_ids else None
+        effective_ids = pending_message_ids if pending_message_ids else sent_message_ids
+        last_message_id = effective_ids[-1] if effective_ids else None
 
         logger.info(
             "ClarificationAgent: needed=%s message_ids=%s summary=%s",
-            clarification_needed, sent_message_ids, question_summary,
+            clarification_needed, effective_ids, question_summary,
         )
 
         return {
             "questions": [question_summary],
             "clarification_needed": clarification_needed,
             "clarification_message_id": last_message_id,
-            "clarification_message_ids": sent_message_ids,
+            "clarification_message_ids": effective_ids,
             "question_summary": question_summary,
             **self.get_token_usage(),
         }
@@ -171,3 +199,51 @@ def _parse_result(content: str) -> dict[str, Any]:
             break
 
     return {"clarification_needed": True, "question_summary": "Clarification questions posted"}
+
+
+async def _fetch_task_messages(task_id: int) -> list[dict[str, Any]]:
+    try:
+        from app.tools.communication import _get_client
+        result = await _get_client()._request("GET", f"/tasks/{task_id}/messages")
+        if isinstance(result, list):
+            return result
+    except Exception as exc:
+        logger.warning("ClarificationAgent: failed to fetch existing messages for task %s: %s", task_id, exc)
+    return []
+
+
+def _extract_existing_question_state(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    pending_ids: list[int] = []
+    answered_items: list[dict[str, str]] = []
+    for msg in messages:
+        if msg.get("message_type") != "question":
+            continue
+        if msg.get("sender_type") != "agent":
+            continue
+        mid = msg.get("id")
+        structured = msg.get("structured_data") or {}
+        response = str(structured.get("response", "")).strip()
+        responded_at = structured.get("responded_at")
+        if response or responded_at:
+            answered_items.append({
+                "question": str(msg.get("content", "")).strip(),
+                "answer": response,
+            })
+            continue
+        if isinstance(mid, int):
+            pending_ids.append(mid)
+    return {
+        "pending_ids": pending_ids,
+        "answered_items": answered_items,
+    }
+
+
+def _format_answered(items: list[dict[str, str]]) -> str:
+    if not items:
+        return "(none)"
+    lines = []
+    for item in items[:10]:
+        q = item.get("question", "").strip() or "(question)"
+        a = item.get("answer", "").strip() or "(answered via UI)"
+        lines.append(f"- Q: {q}\n  A: {a}")
+    return "\n".join(lines)
