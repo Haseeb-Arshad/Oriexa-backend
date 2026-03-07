@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.db.engine import async_session
 from app.db.enums import OrchTaskStatus
-from app.db.models import OrchTaskExecution
+from app.db.models import OrchSubtask, OrchTaskExecution
 from app.orchestrator.concurrency import WorkerPool
 from app.sandbox.workspace import WorkspaceManager
 from app.oriexa_client.client import OriexaClient
@@ -54,6 +54,22 @@ CODING_INDICATORS = [
     "fastapi", "express", "django", "flask",
     "node.js", "npm", "package",
 ]
+
+REPLAN_HINTS = (
+    "change requirement",
+    "change the requirement",
+    "new requirement",
+    "scope changed",
+    "update the plan",
+    "replan",
+    "different approach",
+    "do it instead",
+)
+
+
+def _message_requests_replan(content: str) -> bool:
+    lowered = content.lower()
+    return any(hint in lowered for hint in REPLAN_HINTS)
 
 
 def _is_coding_task(task_data: dict[str, Any]) -> bool:
@@ -339,9 +355,16 @@ class TaskPickerDaemon:
                     new_messages = current_messages + [
                         {"role": "user", "content": content, "timestamp": datetime.now(timezone.utc).isoformat()}
                     ]
-                    
+
+                    update_payload: dict[str, Any] = {
+                        "user_live_messages": new_messages
+                    }
+                    if _message_requests_replan(content):
+                        update_payload["replan_requested"] = True
+                        update_payload["replan_reason"] = content[:500]
+
                     # Update graph state with the new message list
-                    await graph.aupdate_state(config, {"user_live_messages": new_messages})
+                    await graph.aupdate_state(config, update_payload)
                     logger.info("Injected chat message into task %d thread %s", task_id, thread_id)
         except Exception as exc:
             logger.warning("Failed to inject message into task %d thread: %s", task_id, exc)
@@ -452,6 +475,39 @@ class TaskPickerDaemon:
             task_id = claim.get("task_id")
             if not task_id:
                 continue
+
+            # Prevent runaway token burn: do not auto-restart accepted claims
+            # that already reached a terminal execution state.
+            async with async_session() as session:
+                existing_result = await session.execute(
+                    select(OrchTaskExecution)
+                    .where(OrchTaskExecution.oriexa_task_id == task_id)
+                    .order_by(OrchTaskExecution.id.desc())
+                    .limit(1)
+                )
+                existing = existing_result.scalar_one_or_none()
+
+            if existing is not None:
+                if existing.status == OrchTaskStatus.COMPLETED.value:
+                    continue
+                if existing.status == OrchTaskStatus.FAILED.value:
+                    logger.info(
+                        "Accepted claim for task %d has a failed execution %d; "
+                        "skipping auto-restart to avoid retry loops",
+                        task_id,
+                        existing.id,
+                    )
+                    continue
+                if existing.status in {
+                    OrchTaskStatus.PENDING.value,
+                    OrchTaskStatus.CLAIMING.value,
+                    OrchTaskStatus.CLARIFYING.value,
+                    OrchTaskStatus.PLANNING.value,
+                    OrchTaskStatus.EXECUTING.value,
+                    OrchTaskStatus.REVIEWING.value,
+                    OrchTaskStatus.DELIVERING.value,
+                }:
+                    continue
 
             # Fetch full task data and start orchestration
             task_data = await self.client.get_task(task_id)
@@ -637,6 +693,9 @@ class TaskPickerDaemon:
         graph = build_supervisor_graph()
         compiled = graph.compile()
 
+        plan, subtask_results, current_subtask_index = await self._load_existing_plan_state(execution_id)
+        planning_locked = bool(plan)
+
         initial_state = {
             "execution_id": execution_id,
             "oriexa_task_id": task_id,
@@ -650,8 +709,15 @@ class TaskPickerDaemon:
             "files_created": [],
             "files_modified": [],
             "commands_executed": [],
-            "subtask_results": [],
+            "subtask_results": subtask_results,
+            "plan": plan,
+            "planning_locked": planning_locked,
+            "plan_revision_count": 0,
+            "replan_requested": False,
+            "replan_reason": None,
+            "current_subtask_index": current_subtask_index,
             "messages": [],
+            "user_live_messages": [],
             "action_hashes": [],
             "error": None,
             "review_feedback": review_feedback,
@@ -684,6 +750,48 @@ class TaskPickerDaemon:
         # NOTE: workspace is intentionally NOT cleaned up so files remain
         # accessible through the preview dashboard. Use the cleanup API to
         # reclaim disk space for old executions.
+
+    async def _load_existing_plan_state(
+        self,
+        execution_id: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+        """Load persisted subtasks so retries continue from existing roadmap."""
+        async with async_session() as session:
+            result = await session.execute(
+                select(OrchSubtask)
+                .where(OrchSubtask.execution_id == execution_id)
+                .order_by(OrchSubtask.order_index)
+            )
+            rows = result.scalars().all()
+
+        if not rows:
+            return [], [], 0
+
+        plan: list[dict[str, Any]] = []
+        subtask_results: list[dict[str, Any]] = []
+        current_subtask_index = len(rows)
+
+        for row in rows:
+            plan.append({
+                "title": row.title,
+                "description": row.description,
+                "depends_on": row.depends_on if isinstance(row.depends_on, list) else [],
+            })
+
+            normalized_status = str(row.status or "pending")
+            if normalized_status != "pending":
+                subtask_results.append({
+                    "index": row.order_index,
+                    "title": row.title,
+                    "status": normalized_status,
+                    "result": row.result or "",
+                    "files_changed": row.files_changed if isinstance(row.files_changed, list) else [],
+                })
+
+            if normalized_status in {"pending", "failed", "in_progress"} and current_subtask_index == len(rows):
+                current_subtask_index = row.order_index
+
+        return plan, subtask_results, current_subtask_index
 
     async def _check_paused_tasks(self) -> None:
         """Check for tasks waiting for poster response and resume if response received."""

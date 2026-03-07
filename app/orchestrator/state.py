@@ -48,6 +48,10 @@ class TaskState(TypedDict, total=False):
 
     # Planning
     plan: list[SubtaskPlan]
+    planning_locked: bool
+    plan_revision_count: int
+    replan_requested: bool
+    replan_reason: str | None
     subtask_results: list[SubtaskResult]
     current_subtask_index: int
 

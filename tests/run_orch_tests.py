@@ -90,8 +90,15 @@ def test_graph_routing():
     assert route_after_planning({"complexity": "low", "task_data": {"budget_credits": 600}}) == "complex_execution"
 
     # Review
-    assert route_after_review({"review_passed": True}) == "delivery"
-    assert route_after_review({"review_passed": False, "attempt_count": 1, "max_attempts": 3}) == "planning"
+    assert route_after_review({"review_passed": True}) == "deployment"
+    assert route_after_review({
+        "review_passed": False,
+        "attempt_count": 1,
+        "max_attempts": 3,
+        "review_score": 80,
+        "complexity": "low",
+        "task_data": {"budget_credits": 100},
+    }) == "execution"
     assert route_after_review({"review_passed": False, "attempt_count": 3, "max_attempts": 3}) == "failed"
 
     print("PASS: Graph routing (9 checks)")
@@ -104,7 +111,7 @@ def test_graph_compilation():
     nodes = set(graph.nodes.keys())
     expected = {
         "triage", "clarification", "wait_for_response", "planning",
-        "execution", "complex_execution", "review", "delivery", "failed",
+        "execution", "complex_execution", "review", "deployment", "delivery", "failed",
     }
     assert nodes == expected, f"Missing: {expected - nodes}"
     compiled = graph.compile()

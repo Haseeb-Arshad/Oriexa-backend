@@ -166,8 +166,26 @@ class TestGraphRoutingWithDeployment:
         assert route_after_review(state) == "deployment"
 
     def test_review_failed_still_retries(self):
-        state = {"review_passed": False, "attempt_count": 1, "max_attempts": 3}
-        assert route_after_review(state) == "planning"
+        state = {
+            "review_passed": False,
+            "attempt_count": 1,
+            "max_attempts": 3,
+            "review_score": 80,
+            "complexity": "low",
+            "task_data": {"budget_credits": 100},
+        }
+        assert route_after_review(state) == "execution"
+
+    def test_review_failed_low_score_escalates(self):
+        state = {
+            "review_passed": False,
+            "attempt_count": 1,
+            "max_attempts": 3,
+            "review_score": 30,
+            "complexity": "low",
+            "task_data": {"budget_credits": 100},
+        }
+        assert route_after_review(state) == "complex_execution"
 
     def test_review_failed_max_attempts(self):
         state = {"review_passed": False, "attempt_count": 3, "max_attempts": 3}

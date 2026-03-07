@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
 from langgraph.graph import END, StateGraph
+from sqlalchemy import select
 
 from app.config import settings
 from app.orchestrator.progress import progress_tracker
@@ -30,6 +32,49 @@ def _normalize_subtask_status(status: str | None) -> str:
     return "completed" if normalized in {"done", "success"} else "failed"
 
 
+def _sanitize_plan_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": str(item.get("title", f"Subtask {index + 1}")),
+        "description": str(item.get("description", "")),
+        "depends_on": list(item.get("depends_on", [])),
+    }
+
+
+def _merge_plan_patch(
+    existing_plan: list[dict[str, Any]],
+    proposed_plan: list[dict[str, Any]],
+    subtask_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Patch an existing plan without rewriting completed work."""
+    if not existing_plan:
+        return [_sanitize_plan_item(i, p) for i, p in enumerate(proposed_plan)]
+    if not proposed_plan:
+        return [_sanitize_plan_item(i, p) for i, p in enumerate(existing_plan)]
+
+    completed_indexes = {
+        int(item.get("index", -1))
+        for item in subtask_results
+        if _normalize_subtask_status(item.get("status")) == "completed"
+    }
+
+    merged = [_sanitize_plan_item(i, p) for i, p in enumerate(existing_plan)]
+    for i, proposed in enumerate(proposed_plan):
+        normalized = _sanitize_plan_item(i, proposed)
+        if i < len(merged):
+            if i in completed_indexes:
+                # Keep completed work untouched.
+                continue
+            current = merged[i]
+            merged[i] = {
+                "title": current["title"] or normalized["title"],
+                "description": normalized["description"] or current["description"],
+                "depends_on": normalized["depends_on"] or current["depends_on"],
+            }
+        else:
+            merged.append(normalized)
+    return merged
+
+
 _HOUSEKEEPING_FILES = {
     ".gitignore",
     ".build_log",
@@ -40,6 +85,18 @@ _HOUSEKEEPING_FILES = {
 _MEANINGFUL_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".rb", ".php",
     ".html", ".css", ".scss", ".sql", ".json", ".yaml", ".yml", ".md",
+}
+
+
+_IGNORED_SCAN_DIRS = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".next",
+    "dist",
+    "build",
 }
 
 
@@ -58,6 +115,39 @@ def _has_meaningful_file_changes(
             suffix = "." + name.rsplit(".", 1)[-1].lower()
         if suffix in _MEANINGFUL_EXTENSIONS or suffix == "":
             return True
+    return False
+
+
+def _has_meaningful_workspace_files(workspace_path: str) -> bool:
+    """Fallback check when agent metadata misses file edits.
+
+    Some implementations create files via shell commands instead of write_file tool calls,
+    so files_created/files_modified may be empty even when real code exists.
+    """
+    if not workspace_path:
+        return False
+
+    root = Path(workspace_path)
+    if not root.exists() or not root.is_dir():
+        return False
+
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        parts = rel.split("/")
+        if any(part in _IGNORED_SCAN_DIRS for part in parts):
+            continue
+        name = path.name
+        if name in _HOUSEKEEPING_FILES:
+            continue
+
+        suffix = path.suffix.lower()
+        if suffix in _MEANINGFUL_EXTENSIONS:
+            return True
+        if suffix == "" and name not in {".env", ".npmrc"}:
+            return True
+
     return False
 
 
@@ -88,6 +178,57 @@ async def _persist_subtask_results(
             await session.commit()
     except Exception as exc:
         logger.warning("Failed to persist subtask results for execution %d: %s", execution_id, exc)
+
+
+async def _upsert_plan_subtasks(
+    execution_id: int,
+    plan: list[dict[str, Any]],
+) -> None:
+    """Persist planning subtasks without destructive rewrites."""
+    if execution_id <= 0:
+        return
+    try:
+        from app.db.engine import async_session
+        from app.db.models import OrchSubtask
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(OrchSubtask)
+                .where(OrchSubtask.execution_id == execution_id)
+                .order_by(OrchSubtask.order_index)
+            )
+            rows = {row.order_index: row for row in result.scalars().all()}
+            for idx, item in enumerate(plan):
+                normalized = _sanitize_plan_item(idx, item)
+                row = rows.get(idx)
+                if row is None:
+                    session.add(
+                        OrchSubtask(
+                            execution_id=execution_id,
+                            order_index=idx,
+                            title=normalized["title"],
+                            description=normalized["description"],
+                            status="pending",
+                            depends_on=normalized["depends_on"],
+                        )
+                    )
+                    continue
+
+                # Completed/in-progress items are immutable; patch only pending/failed/skipped.
+                if row.status in {"completed", "in_progress"}:
+                    if not row.depends_on and normalized["depends_on"]:
+                        row.depends_on = normalized["depends_on"]
+                    continue
+
+                row.title = normalized["title"]
+                row.description = normalized["description"]
+                row.depends_on = normalized["depends_on"]
+                if row.status == "skipped":
+                    row.status = "pending"
+
+            await session.commit()
+    except Exception as exc:
+        logger.warning("Failed to upsert OrchSubtask records for execution %d: %s", execution_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +498,38 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
     from app.llm.router import ModelTier
 
     eid = _eid(state)
+    existing_plan = state.get("plan", []) or []
+    planning_locked = bool(state.get("planning_locked", False))
+    replan_requested = bool(state.get("replan_requested", False))
+
+    if existing_plan and planning_locked and not replan_requested:
+        progress_tracker.add_step(
+            eid,
+            "planning",
+            "start",
+            detail="Plan already exists and is locked; reusing current roadmap",
+        )
+        await _upsert_plan_subtasks(eid, existing_plan)
+        subtask_titles = [s.get("title", "Step") for s in existing_plan]
+        progress_tracker.add_step(
+            eid,
+            "planning",
+            "done",
+            detail=f"Continuing with existing {len(existing_plan)}-step plan: {', '.join(subtask_titles[:4])}{'...' if len(subtask_titles) > 4 else ''}",
+            metadata={"subtask_count": len(existing_plan), "subtasks": subtask_titles, "reused": True},
+        )
+        return {
+            "phase": "planning",
+            "plan": existing_plan,
+            "planning_locked": True,
+            "replan_requested": False,
+            "replan_reason": None,
+            "current_subtask_index": state.get("current_subtask_index", 0),
+            "subtask_results": state.get("subtask_results", []),
+            "total_prompt_tokens": state.get("total_prompt_tokens", 0),
+            "total_completion_tokens": state.get("total_completion_tokens", 0),
+        }
+
     attempt = state.get("attempt_count", 0)
     if attempt > 0:
         progress_tracker.add_step(eid, "planning", "start",
@@ -370,6 +543,7 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
 
     # Feed clarification response into the state for the planning agent
     clarification_response = state.get("clarification_response")
+    replan_reason = state.get("replan_reason")
     planning_state = dict(state)
     if clarification_response:
         original_desc = planning_state.get("task_data", {}).get("description", "")
@@ -377,6 +551,13 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
         planning_state["task_data"] = dict(planning_state["task_data"])
         planning_state["task_data"]["description"] = (
             f"Poster clarified: {clarification_response}\n\n{original_desc}"
+        )
+    if replan_reason:
+        original_desc = planning_state.get("task_data", {}).get("description", "")
+        planning_state.setdefault("task_data", {})
+        planning_state["task_data"] = dict(planning_state["task_data"])
+        planning_state["task_data"]["description"] = (
+            f"User intervention update: {replan_reason}\n\n{original_desc}"
         )
 
     # Frontend tasks use claude-sonnet-4.6 for deep planning reasoning
@@ -389,37 +570,27 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
     agent = PlanningAgent(model_tier=planning_tier)
     result = await agent.run(planning_state)
 
-    plan = result.get("plan", [])
+    proposed_plan = result.get("plan", [])
+    if existing_plan and planning_locked:
+        plan = _merge_plan_patch(
+            existing_plan,
+            proposed_plan,
+            state.get("subtask_results", []),
+        )
+    else:
+        plan = [_sanitize_plan_item(i, p) for i, p in enumerate(proposed_plan)]
+    plan_revision_count = int(state.get("plan_revision_count", 0))
+    if existing_plan and planning_locked and replan_requested:
+        plan_revision_count += 1
+
     subtask_titles = [s.get("title", "Step") for s in plan]
 
     # ── Persist OrchSubtask records to database ───────────────────
     # The frontend roadmap reads from the orch_subtasks table.
     # Without these rows, the UI shows "Spinning up..." indefinitely.
     if eid and plan:
-        try:
-            from app.db.engine import async_session
-            from app.db.models import OrchSubtask
-            from sqlalchemy import delete
-
-            async with async_session() as session:
-                # Clear any previous subtasks for this execution (e.g. on re-plan)
-                await session.execute(
-                    delete(OrchSubtask).where(OrchSubtask.execution_id == eid)
-                )
-                for idx, subtask in enumerate(plan):
-                    row = OrchSubtask(
-                        execution_id=eid,
-                        order_index=idx,
-                        title=subtask.get("title", f"Subtask {idx + 1}"),
-                        description=subtask.get("description", ""),
-                        status="pending",
-                        depends_on=subtask.get("depends_on", []),
-                    )
-                    session.add(row)
-                await session.commit()
-            logger.info("Persisted %d OrchSubtask records for execution %d", len(plan), eid)
-        except Exception as exc:
-            logger.warning("Failed to persist OrchSubtask records for execution %d: %s", eid, exc)
+        await _upsert_plan_subtasks(eid, plan)
+        logger.info("Persisted/updated %d OrchSubtask records for execution %d", len(plan), eid)
 
     # Git commit after planning
     workspace_path = state.get("workspace_path")
@@ -438,8 +609,12 @@ async def planning_node(state: TaskState) -> dict[str, Any]:
     return {
         "phase": "planning",
         "plan": plan,
-        "current_subtask_index": 0,
-        "subtask_results": [],
+        "planning_locked": True,
+        "plan_revision_count": plan_revision_count,
+        "replan_requested": False,
+        "replan_reason": None,
+        "current_subtask_index": state.get("current_subtask_index", 0),
+        "subtask_results": state.get("subtask_results", []),
         "total_prompt_tokens": state.get("total_prompt_tokens", 0) + result.get("prompt_tokens", 0),
         "total_completion_tokens": state.get("total_completion_tokens", 0) + result.get("completion_tokens", 0),
     }
@@ -605,6 +780,8 @@ async def review_node(state: TaskState) -> dict[str, Any]:
     files_modified = state.get("files_modified", [])
     commands_executed = state.get("commands_executed", [])
     has_meaningful_changes = _has_meaningful_file_changes(files_created, files_modified)
+    if not has_meaningful_changes and workspace_path:
+        has_meaningful_changes = _has_meaningful_workspace_files(workspace_path)
     if not has_meaningful_changes:
         feedback = (
             "No meaningful implementation changes detected. "
@@ -638,6 +815,7 @@ async def review_node(state: TaskState) -> dict[str, Any]:
     score = result.get("score", 0)
     passed = result.get("passed", False)
     feedback = result.get("feedback", "")
+    next_attempt = int(result.get("attempt_count", state.get("attempt_count", 0) + 1))
 
     if passed:
         detail = f"Quality score: {score}/100 — looking great, ready for delivery!"
@@ -662,6 +840,7 @@ async def review_node(state: TaskState) -> dict[str, Any]:
         "review_score": score,
         "review_passed": passed,
         "review_feedback": feedback,
+        "attempt_count": next_attempt,
         "test_results": test_results,
         "total_prompt_tokens": state.get("total_prompt_tokens", 0) + result.get("prompt_tokens", 0),
         "total_completion_tokens": state.get("total_completion_tokens", 0) + result.get("completion_tokens", 0),
@@ -930,18 +1109,24 @@ def route_after_planning(state: TaskState) -> str:
 def route_after_review(state: TaskState) -> str:
     if state.get("review_passed", False):
         return "deployment"
-    attempt = state.get("attempt_count", 0)
-    # Low-complexity tasks get fewer retry attempts to save time
+    attempt = int(state.get("attempt_count", 0))
     complexity = state.get("complexity", "medium")
     default_max = 2 if complexity == "low" else 3
-    max_attempts = state.get("max_attempts", default_max)
-    if attempt < max_attempts:
-        budget = state.get("task_data", {}).get("budget_credits", 0)
-        if complexity == "high" or budget > 500:
-            return "complex_execution"
-        return "execution"
-    return "failed"
+    max_attempts = int(state.get("max_attempts", default_max))
+    if attempt >= max_attempts:
+        return "failed"
 
+    if state.get("replan_requested", False):
+        return "planning"
+
+    budget = int(state.get("task_data", {}).get("budget_credits", 0))
+    score = int(state.get("review_score", 0))
+    # Escalate to stronger execution when quality is poor or retries are mounting.
+    if complexity == "high" or budget > 500 or score <= 55 or attempt >= 2:
+        return "complex_execution"
+    if "no meaningful implementation changes detected" in str(state.get("review_feedback", "")).lower():
+        return "complex_execution"
+    return "execution"
 
 def route_after_deployment(state: TaskState) -> str:
     if state.get("deployment_passed", True):
