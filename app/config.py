@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # LLM providers
     OPENROUTER_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""  # For direct Anthropic calls (opus)
+    ANTHROPIC_KEY: str = ""  # Backward-compatible alias used by some workers
     MOONSHOT_API_KEY: str = ""  # For Kimi models
     AGENTIC_TEMP_USE_ANTHROPIC_OPUS: bool = False
     AGENTIC_TEMP_ANTHROPIC_MODEL: str = "anthropic/claude-opus-4-6"
@@ -22,7 +23,7 @@ class Settings(BaseSettings):
     # Model IDs per tier — supports OpenRouter free, Anthropic direct, Moonshot
     FAST_MODEL: str = "minimax/minimax-m2.5"
     DEFAULT_MODEL: str = "minimax/minimax-m2.5"
-    STRONG_MODEL: str = "anthropic/claude-sonnet-4.6"
+    STRONG_MODEL: str = "anthropic/claude-sonnet-4-6"
     THINKING_MODEL: str = "moonshot/kimi-k2.5-thinking"  # Deep reasoning tasks
 
     # Frontend coding agent model tiers

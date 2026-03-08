@@ -12,6 +12,7 @@ Calls GET /api/v1/tasks/:id/review-config to get the resolved key.
 
 from __future__ import annotations
 import os
+import re
 import httpx
 from app.agents.user_reviewer.state import ReviewerState
 
@@ -26,7 +27,7 @@ def _get_temp_anthropic_model() -> str:
     model = os.environ.get("AGENTIC_TEMP_ANTHROPIC_MODEL", "claude-opus-4-6")
     if model.startswith("anthropic/"):
         model = model[len("anthropic/"):]
-    return model
+    return re.sub(r"^claude-(opus|sonnet|haiku)-(\d+)\.(\d+)$", r"claude-\1-\2-\3", model)
 
 
 def resolve_api_key(state: ReviewerState) -> dict:

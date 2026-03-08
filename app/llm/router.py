@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
@@ -30,6 +31,26 @@ ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
 
 _model_cache: dict[str, BaseChatModel] = {}
+
+
+def _normalize_anthropic_model(model_id: str) -> str:
+    """Normalize Anthropic model aliases (supports dot and dash variants)."""
+    if model_id.startswith("anthropic/"):
+        model_id = model_id[len("anthropic/"):]
+
+    alias_map = {
+        "claude-opus-4.6": "claude-opus-4-6",
+        "claude-sonnet-4.6": "claude-sonnet-4-6",
+        "claude-opus-4.5": "claude-opus-4-5",
+        "claude-sonnet-4.5": "claude-sonnet-4-5",
+        "claude-opus-4.1": "claude-opus-4-1",
+        "claude-opus-4.0": "claude-opus-4-0",
+        "claude-haiku-4.5": "claude-haiku-4-5",
+    }
+    if model_id in alias_map:
+        return alias_map[model_id]
+
+    return re.sub(r"^claude-(opus|sonnet|haiku)-(\d+)\.(\d+)$", r"claude-\1-\2-\3", model_id)
 
 
 class ModelTier(str, enum.Enum):
@@ -105,9 +126,11 @@ def _build_model(
 
     elif provider == "anthropic":
         # Use langchain-anthropic ChatAnthropic for the native Anthropic Messages API
+        normalized_model_id = _normalize_anthropic_model(model_id)
+        anthropic_key = settings.ANTHROPIC_API_KEY or settings.ANTHROPIC_KEY
         return ChatAnthropic(
-            model=model_id,
-            anthropic_api_key=settings.ANTHROPIC_API_KEY,
+            model=normalized_model_id,
+            api_key=anthropic_key,
             temperature=temperature,
             max_tokens=max_tokens,
         )

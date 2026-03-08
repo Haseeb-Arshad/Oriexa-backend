@@ -43,6 +43,13 @@ AGENTIC_TEMP_USE_ANTHROPIC_OPUS = os.environ.get("AGENTIC_TEMP_USE_ANTHROPIC_OPU
 }
 AGENTIC_TEMP_ANTHROPIC_MODEL = os.environ.get("AGENTIC_TEMP_ANTHROPIC_MODEL", "claude-opus-4-6")
 
+
+def _normalize_anthropic_model(model_str: str) -> str:
+    if model_str.startswith("anthropic/"):
+        model_str = model_str[len("anthropic/"):]
+    model_str = re.sub(r"^claude-(opus|sonnet|haiku)-(\d+)\.(\d+)$", r"claude-\1-\2-\3", model_str)
+    return model_str
+
 DEFAULT_CAPABILITIES = ["nextjs", "react", "vite", "javascript", "typescript", "tailwindcss", "frontend", "web-development"]
 
 
@@ -148,9 +155,7 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
         if not ANTHROPIC_KEY:
             raise ValueError("Anthropic API key not configured")
 
-        model_str = AGENTIC_TEMP_ANTHROPIC_MODEL
-        if model_str.startswith("anthropic/"):
-            model_str = model_str[len("anthropic/"):]
+        model_str = _normalize_anthropic_model(AGENTIC_TEMP_ANTHROPIC_MODEL)
 
         resp = httpx.post(
             "https://api.anthropic.com/v1/messages",
