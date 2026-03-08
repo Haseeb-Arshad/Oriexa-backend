@@ -83,8 +83,17 @@ async def get_execution(execution_id: int) -> dict[str, Any]:
 
 @router.get("/{execution_id}/logs")
 async def get_execution_logs(execution_id: int) -> dict[str, Any]:
-    """Return raw build log content for a task execution."""
+    """Return raw execution logs for a task execution.
+
+    Primary source is `.build_log` in the workspace.
+    Fallback source is in-memory progress steps so the UI still shows
+    useful live activity even when the log file is missing/empty.
+    """
+    from datetime import datetime, timezone
     from pathlib import Path
+
+    from app.config import settings
+    from app.orchestrator.progress import progress_tracker
     
     async with async_session() as session:
         result = await session.execute(
@@ -92,21 +101,59 @@ async def get_execution_logs(execution_id: int) -> dict[str, Any]:
         )
         execution = result.scalar_one_or_none()
 
-    if not execution or not execution.workspace_path:
-        raise HTTPException(status_code=404, detail="Execution or workspace not found")
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
 
-    log_file = Path(execution.workspace_path) / ".build_log"
-    if not log_file.exists():
-        return {"ok": True, "data": None}
+    candidates: list[Path] = []
+    if execution.workspace_path:
+        candidates.append(Path(execution.workspace_path))
+    # Fallback to canonical workspace root path used by WorkspaceManager.
+    candidates.append(Path(settings.WORKSPACE_ROOT) / f"task-{execution_id}")
 
-    try:
-        content = log_file.read_text(encoding="utf-8", errors="replace")
-        # Return last 8000 chars to avoid huge payloads
-        if len(content) > 8000:
-            content = "... (truncated) ...\n" + content[-8000:]
-        return {"ok": True, "data": content}
-    except Exception:
-        return {"ok": True, "data": None}
+    seen: set[str] = set()
+    workspace_candidates: list[Path] = []
+    for base in candidates:
+        key = str(base)
+        if key in seen:
+            continue
+        seen.add(key)
+        workspace_candidates.append(base)
+
+    for workspace in workspace_candidates:
+        log_file = workspace / ".build_log"
+        if not log_file.exists() or not log_file.is_file():
+            continue
+
+        try:
+            content = log_file.read_text(encoding="utf-8", errors="replace").strip()
+            if not content:
+                continue
+            # Return last 12000 chars to preserve more context.
+            if len(content) > 12000:
+                content = "... (truncated) ...\n" + content[-12000:]
+            return {"ok": True, "data": content}
+        except Exception:
+            # Try next candidate before falling back to progress steps.
+            continue
+
+    # Fallback: synthesize logs from live progress steps.
+    steps = progress_tracker.get_steps(execution_id)
+    if steps:
+        lines: list[str] = []
+        for step in steps[-120:]:
+            ts = datetime.fromtimestamp(step.timestamp, tz=timezone.utc).strftime("%H:%M:%S")
+            msg = (step.detail or step.description or step.title or "").strip()
+            if not msg:
+                continue
+            lines.append(f"[{ts}] [{step.phase}] {msg}")
+
+        if lines:
+            return {
+                "ok": True,
+                "data": "\n".join(lines),
+            }
+
+    return {"ok": True, "data": "Logs not available yet. Execution events will appear here once the agent starts writing output."}
 
 
 @router.get("/by-task/{task_id}/active")
