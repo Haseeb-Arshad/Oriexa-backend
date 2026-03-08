@@ -53,6 +53,11 @@ def _get_model_config(tier: ModelTier) -> str:
         ModelTier.CODING_STRONG: settings.CODING_STRONG_MODEL,
         ModelTier.CODING_PLANNING: settings.CODING_PLANNING_MODEL,
     }
+    if settings.AGENTIC_TEMP_USE_ANTHROPIC_OPUS:
+        temporary_model = settings.AGENTIC_TEMP_ANTHROPIC_MODEL
+        if "/" not in temporary_model:
+            temporary_model = f"anthropic/{temporary_model}"
+        return temporary_model
     return mapping[tier]
 
 

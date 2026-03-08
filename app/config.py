@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""  # For direct Anthropic calls (opus)
     MOONSHOT_API_KEY: str = ""  # For Kimi models
+    AGENTIC_TEMP_USE_ANTHROPIC_OPUS: bool = False
+    AGENTIC_TEMP_ANTHROPIC_MODEL: str = "anthropic/claude-opus-4-6"
 
     # Model IDs per tier — supports OpenRouter free, Anthropic direct, Moonshot
     FAST_MODEL: str = "minimax/minimax-m2.5"
