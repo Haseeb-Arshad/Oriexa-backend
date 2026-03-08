@@ -18,6 +18,7 @@ import enum
 import logging
 
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 
 from app.config import settings
@@ -28,7 +29,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
 
-_model_cache: dict[str, ChatOpenAI] = {}
+_model_cache: dict[str, BaseChatModel] = {}
 
 
 class ModelTier(str, enum.Enum):
@@ -84,8 +85,8 @@ def _build_model(
     model_id: str,
     temperature: float,
     max_tokens: int,
-) -> ChatOpenAI:
-    """Build a ChatOpenAI instance for the given provider."""
+) -> BaseChatModel:
+    """Build a LangChain chat model instance for the given provider."""
 
     if provider == "openrouter":
         return ChatOpenAI(
@@ -103,19 +104,12 @@ def _build_model(
         )
 
     elif provider == "anthropic":
-        # Use langchain-openai with Anthropic's OpenAI-compatible endpoint
-        # Or use langchain-anthropic if available — here we use the OpenAI compat layer
-        return ChatOpenAI(
+        # Use langchain-anthropic ChatAnthropic for the native Anthropic Messages API
+        return ChatAnthropic(
             model=model_id,
-            openai_api_key=settings.ANTHROPIC_API_KEY,
-            openai_api_base=ANTHROPIC_BASE_URL,
+            anthropic_api_key=settings.ANTHROPIC_API_KEY,
             temperature=temperature,
             max_tokens=max_tokens,
-            model_kwargs={
-                "extra_headers": {
-                    "anthropic-version": "2023-06-01",
-                },
-            },
         )
 
     elif provider == "moonshot":
@@ -135,12 +129,12 @@ def get_model(
     tier: ModelTier | str,
     temperature: float = 0.1,
     max_tokens: int = 4096,
-) -> ChatOpenAI:
-    """Return a ChatOpenAI instance for the given tier.
+) -> BaseChatModel:
+    """Return a chat model instance for the given tier.
 
     Supports multiple providers based on the model ID prefix:
     - openrouter/... → OpenRouter (free models like arcee-ai, stepfun)
-    - anthropic/...  → Direct Anthropic API (opus-4.5)
+    - anthropic/...  → Direct Anthropic API (ChatAnthropic)
     - moonshot/...   → Moonshot Kimi API (kimi-k2-thinking)
     """
     if isinstance(tier, str):
@@ -164,12 +158,22 @@ def get_model_by_id(
     model_config: str,
     temperature: float = 0.1,
     max_tokens: int = 4096,
-) -> ChatOpenAI:
-    """Return a ChatOpenAI instance for an explicit model ID string.
+) -> BaseChatModel:
+    """Return a chat model instance for an explicit model ID string.
 
     Useful when agents need a specific model outside the tier system.
+    When the temporary Anthropic override is active, ALL calls are routed
+    to the configured Anthropic model regardless of the requested model_config.
     """
-    provider, model_id = _parse_provider(model_config)
+    # When temp override is active, redirect all explicit model IDs too
+    if settings.AGENTIC_TEMP_USE_ANTHROPIC_OPUS:
+        override_model = settings.AGENTIC_TEMP_ANTHROPIC_MODEL
+        if "/" not in override_model:
+            override_model = f"anthropic/{override_model}"
+        provider, model_id = _parse_provider(override_model)
+    else:
+        provider, model_id = _parse_provider(model_config)
+
     cache_key = f"{provider}:{model_id}:{temperature}:{max_tokens}"
 
     if cache_key not in _model_cache:
@@ -200,6 +204,11 @@ def get_model_with_fallback(
         tier = ModelTier(tier)
 
     primary = get_model(tier, temperature, max_tokens)
+
+    # When the temporary Anthropic override is active, every tier resolves to the
+    # same model. Fallbacks would just retry the identical endpoint, so skip them.
+    if settings.AGENTIC_TEMP_USE_ANTHROPIC_OPUS:
+        return primary
 
     # Define fallback sequence based on tier
     fallbacks: list[BaseChatModel] = []
