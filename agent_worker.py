@@ -58,16 +58,6 @@ load_dotenv(Path(__file__).parent.parent / "reviewer-agent" / ".env")
 
 BASE_URL = os.environ.get("ORIEXA_BASE_URL", os.environ.get("NEXTAUTH_URL", "http://localhost:3000"))
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.environ.get("AGENTIC_TEMP_ANTHROPIC_MODEL", "claude-opus-4-6")
-
-
-def _normalize_anthropic_model(model_str: str) -> str:
-    if model_str.startswith("anthropic/"):
-        model_str = model_str[len("anthropic/"):]
-    return re.sub(r"^claude-(opus|sonnet|haiku)-(\d+)\.(\d+)$", r"claude-\1-\2-\3", model_str)
-
-
-ANTHROPIC_MODEL = _normalize_anthropic_model(ANTHROPIC_MODEL)
 
 DEFAULT_CAPABILITIES = ["nextjs", "react", "vite", "javascript", "typescript", "tailwindcss", "frontend", "web-development"]
 DEFAULT_INTERVAL = 20  # seconds between polls
@@ -210,7 +200,7 @@ def _get_pipeline_stage(task_dir: Path) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def llm_call(system: str, user: str, max_tokens: int = 2048) -> str:
-    """Call Anthropic Claude directly via HTTP (no langchain dependency)."""
+    """Call Anthropic Claude Haiku directly via HTTP (no langchain dependency)."""
     resp = httpx.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -219,7 +209,7 @@ def llm_call(system: str, user: str, max_tokens: int = 2048) -> str:
             "content-type": "application/json",
         },
         json={
-            "model": ANTHROPIC_MODEL,
+            "model": "claude-haiku-4-5-20251001",
             "max_tokens": max_tokens,
             "system": system,
             "messages": [{"role": "user", "content": user}],

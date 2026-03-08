@@ -38,17 +38,6 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "") or os.environ.get("ANTHROPIC
 KIMI_KEY = os.environ.get("Kimi_Key", "") or os.environ.get("KIMI_KEY", "")
 MOONSHOT_API_KEY = os.environ.get("MOONSHOT_API_KEY", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-AGENTIC_TEMP_USE_ANTHROPIC_OPUS = os.environ.get("AGENTIC_TEMP_USE_ANTHROPIC_OPUS", "").strip().lower() in {
-    "1", "true", "yes", "on",
-}
-AGENTIC_TEMP_ANTHROPIC_MODEL = os.environ.get("AGENTIC_TEMP_ANTHROPIC_MODEL", "claude-opus-4-6")
-
-
-def _normalize_anthropic_model(model_str: str) -> str:
-    if model_str.startswith("anthropic/"):
-        model_str = model_str[len("anthropic/"):]
-    model_str = re.sub(r"^claude-(opus|sonnet|haiku)-(\d+)\.(\d+)$", r"claude-\1-\2-\3", model_str)
-    return model_str
 
 DEFAULT_CAPABILITIES = ["nextjs", "react", "vite", "javascript", "typescript", "tailwindcss", "frontend", "web-development"]
 
@@ -151,34 +140,6 @@ def write_progress(
 
 def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "kimi") -> str:
     """Multi-provider LLM call wrapper."""
-    if AGENTIC_TEMP_USE_ANTHROPIC_OPUS:
-        if not ANTHROPIC_KEY:
-            raise ValueError("Anthropic API key not configured")
-
-        model_str = _normalize_anthropic_model(AGENTIC_TEMP_ANTHROPIC_MODEL)
-
-        resp = httpx.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": model_str,
-                "messages": [
-                    {"role": "user", "content": user},
-                ],
-                "system": system,
-                "temperature": 0.3,
-                "max_tokens": max_tokens,
-            },
-            timeout=3600.0,
-        )
-        resp.raise_for_status()
-        data: dict = resp.json()
-        return data["content"][0]["text"]
-
     if provider in ["trinity", "openrouter", "claude", "claude-sonnet", "kimi", "openai"]:
         if not OPENROUTER_KEY:
             raise ValueError("OpenRouter API key not configured")

@@ -12,22 +12,8 @@ Calls GET /api/v1/tasks/:id/review-config to get the resolved key.
 
 from __future__ import annotations
 import os
-import re
 import httpx
 from app.agents.user_reviewer.state import ReviewerState
-
-
-def _is_temp_anthropic_mode() -> bool:
-    return os.environ.get("AGENTIC_TEMP_USE_ANTHROPIC_OPUS", "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-
-
-def _get_temp_anthropic_model() -> str:
-    model = os.environ.get("AGENTIC_TEMP_ANTHROPIC_MODEL", "claude-opus-4-6")
-    if model.startswith("anthropic/"):
-        model = model[len("anthropic/"):]
-    return re.sub(r"^claude-(opus|sonnet|haiku)-(\d+)\.(\d+)$", r"claude-\1-\2-\3", model)
 
 
 def resolve_api_key(state: ReviewerState) -> dict:
@@ -121,14 +107,10 @@ def resolve_api_key(state: ReviewerState) -> dict:
 
 def _get_default_key() -> dict | None:
     """Get the platform default LLM key from environment variables."""
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_KEY")
-    if _is_temp_anthropic_mode() and anthropic_key:
-        return {"key": anthropic_key, "provider": "anthropic", "model": _get_temp_anthropic_model()}
-
     if key := os.environ.get("OPENROUTER_API_KEY"):
         model = os.environ.get("DEFAULT_LLM_MODEL", "anthropic/claude-sonnet-4-6")
         return {"key": key, "provider": "openrouter", "model": model}
-    if key := anthropic_key:
+    if key := os.environ.get("ANTHROPIC_API_KEY"):
         model = os.environ.get("DEFAULT_LLM_MODEL", "claude-sonnet-4-6")
         return {"key": key, "provider": "anthropic", "model": model}
     if key := os.environ.get("OPENAI_API_KEY"):
@@ -139,10 +121,9 @@ def _get_default_key() -> dict | None:
 
 def _model_for_provider(provider: str) -> str:
     """Return the default model for a given provider."""
-    anthropic_default = _get_temp_anthropic_model() if _is_temp_anthropic_mode() else "claude-sonnet-4-6"
     defaults = {
         "openrouter": os.environ.get("DEFAULT_LLM_MODEL", "anthropic/claude-sonnet-4-6"),
         "z-ai": "glm-5",
-        "anthropic": anthropic_default,
+        "anthropic": "claude-sonnet-4-6",
     }
-    return defaults.get(provider, anthropic_default)
+    return defaults.get(provider, "claude-sonnet-4-6")
