@@ -748,7 +748,23 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             # create-next-app fails if the directory is not empty.
             # We must move or remove files except state and lock.
             log_think("Cleaning up task directory for scaffolding...", AGENT_NAME)
-            conflicting_files = [".build_log", ".dispatch_log", ".git", ".gitignore", "progress.jsonl", "tsconfig.json", "app", "components", "lib", "public", ".env", ".env.local"]
+            conflicting_files = [
+                ".build_log",
+                ".dispatch_log",
+                ".agent_lock",
+                ".implementation_plan.json",
+                ".swarm_state.json",
+                ".git",
+                ".gitignore",
+                "progress.jsonl",
+                "tsconfig.json",
+                "app",
+                "components",
+                "lib",
+                "public",
+                ".env",
+                ".env.local",
+            ]
             for f in conflicting_files:
                 p = task_dir / f
                 if p.exists():
@@ -773,8 +789,10 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["scaffolded"] = True
                 _save_state(state_file, state)
             else:
-                log_warn(f"Scaffold command failed (rc={rc}). Continuing anyway.", AGENT_NAME)
-                state["scaffolded"] = True  # Don't retry
+                log_warn(f"Scaffold command failed (rc={rc}). Will continue without marking scaffold complete.", AGENT_NAME)
+                append_build_log(task_dir, f"Scaffold failed (rc={rc}): {out[:800]}")
+                # Keep scaffolded=False so a future coding retry can attempt again
+                state["scaffolded"] = False
                 _save_state(state_file, state)
 
         # ── STEP 4: Architectural blueprint (cached — only generate once) ─
@@ -896,6 +914,9 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     if should_push(task_dir):
                         push_to_remote(task_dir)
                         log_ok("  Pushed to GitHub", AGENT_NAME)
+                else:
+                    log_warn(f"  Commit skipped for step {step_num} (no staged changes).", AGENT_NAME)
+                    continue
 
                 step_pct_done = 20.0 + step_num / max(len(steps), 1) * 60.0
                 write_progress(task_dir, task_id, "execution",
@@ -915,6 +936,21 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["files"].extend(files)
                 _save_state(state_file, state)
 
+        completed_count = len(state.get("completed_steps", []))
+        total_steps = len(steps)
+        if total_steps > 0 and completed_count < total_steps:
+            state["status"] = "coding"
+            state["test_errors"] = (
+                f"Implementation incomplete: only {completed_count}/{total_steps} steps were committed. "
+                "Continue coding instead of advancing."
+            )
+            _save_state(state_file, state)
+            return {
+                "action": "error",
+                "task_id": task_id,
+                "error": f"incomplete_implementation_{completed_count}_of_{total_steps}",
+            }
+
         # ── STEP 6: Install dependencies ──────────────────────────────
         if (task_dir / "package.json").exists():
             log_think("Installing npm dependencies...", AGENT_NAME)
@@ -931,14 +967,6 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             else:
                 log_warn(f"npm install failed (rc={rc})", AGENT_NAME)
 
-        # ── STEP 7: Final push ────────────────────────────────────────
-        write_progress(task_dir, task_id, "delivery", "Pushing code",
-                       "Pushing all commits to GitHub repository",
-                       f"Pushing to {state.get('repo_url', 'GitHub')}...", 90.0)
-        push_ok = push_to_remote(task_dir)
-        if not push_ok:
-            log_warn("Final push to GitHub failed.", AGENT_NAME)
-
         if not has_meaningful_implementation(task_dir):
             state["status"] = "coding"
             state["test_errors"] = (
@@ -947,6 +975,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             )
             _save_state(state_file, state)
             return {"action": "error", "error": "No meaningful implementation files found"}
+
+        # ── STEP 7: Final push ────────────────────────────────────────
+        write_progress(task_dir, task_id, "delivery", "Pushing code",
+                       "Pushing all commits to GitHub repository",
+                       f"Pushing to {state.get('repo_url', 'GitHub')}...", 90.0)
+        push_ok = push_to_remote(task_dir)
+        if not push_ok:
+            log_warn("Final push to GitHub failed.", AGENT_NAME)
 
         if not verify_remote_has_main(task_dir):
             state["status"] = "coding"
