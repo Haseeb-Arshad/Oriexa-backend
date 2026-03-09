@@ -297,14 +297,15 @@ async def _deploy_via_vercel_cli(
     if use_linked_project and project_id:
         env_prefix += f" VERCEL_PROJECT_ID={project_id}"
 
-    # Pull project settings
-    pull_result = await executor.execute(
-        f"{env_prefix} npx vercel pull --yes --environment=production --token={token}",
-        cwd=workspace_path,
-        timeout=60,
-    )
-    if pull_result.exit_code != 0:
-        logger.warning("vercel pull failed (non-fatal): %s", pull_result.stderr[:300])
+    # Pull project settings only in linked-project mode.
+    if use_linked_project and org_id and project_id:
+        pull_result = await executor.execute(
+            f"{env_prefix} npx vercel pull --yes --environment=production --token={token}",
+            cwd=workspace_path,
+            timeout=60,
+        )
+        if pull_result.exit_code != 0:
+            logger.warning("vercel pull failed (non-fatal): %s", pull_result.stderr[:300])
 
     # Build
     build_result = await executor.execute(
@@ -323,7 +324,7 @@ async def _deploy_via_vercel_cli(
     else:
         # Deploy prebuilt
         deploy_result = await executor.execute(
-            f"{env_prefix} npx vercel deploy --prebuilt --yes --prod --token={token}",
+            f"{env_prefix} npx vercel deploy --prebuilt --yes --prod --public --token={token}",
             cwd=workspace_path,
             timeout=120,
         )
@@ -333,6 +334,33 @@ async def _deploy_via_vercel_cli(
         return {"success": False, "error": f"Vercel deploy failed: {output[:500]}"}
 
     preview_url = _extract_public_vercel_url(output)
+
+    # If the production URL is protected/private (401/403), fall back to an
+    # unlinked public preview deployment so the returned URL is actually usable.
+    if preview_url and await _is_protected_url(preview_url):
+        logger.warning("Production deployment is protected (401/403). Retrying as public preview deployment.")
+        linked_file = ws / ".vercel" / "project.json"
+        if linked_file.exists():
+            try:
+                linked_file.unlink()
+            except OSError:
+                pass
+
+        fallback_result = await executor.execute(
+            f"VERCEL_TOKEN={token} npx vercel deploy --prebuilt --yes --public --token={token}",
+            cwd=workspace_path,
+            timeout=120,
+        )
+        fallback_output = fallback_result.stdout + fallback_result.stderr
+        if fallback_result.exit_code != 0:
+            return {
+                "success": False,
+                "error": "Vercel deployment URL is protected/private and preview fallback failed",
+            }
+
+        fallback_url = _extract_public_vercel_url(fallback_output)
+        if fallback_url and not await _is_protected_url(fallback_url):
+            preview_url = fallback_url
 
     return {
         "success": True,
@@ -373,6 +401,18 @@ def _extract_public_vercel_url(cli_output: str) -> str:
             return url.rstrip(".,)")
 
     return ""
+
+
+async def _is_protected_url(url: str) -> bool:
+    """Return True when URL responds with auth-protected status."""
+    if not url:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+            return resp.status_code in (401, 403)
+    except Exception:
+        return False
 
 
 async def _deploy_via_endpoint(workspace_path: str, endpoint: str) -> dict[str, Any]:

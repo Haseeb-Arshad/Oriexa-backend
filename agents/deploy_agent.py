@@ -66,14 +66,26 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 # VERCEL DEPLOYMENT
 # ═══════════════════════════════════════════════════════════════════════════
 
-def run_vercel_deploy(task_dir: Path) -> str | None:
+def run_vercel_deploy(
+    task_dir: Path,
+    *,
+    production: bool = True,
+    force_unlinked: bool = False,
+) -> str | None:
     """
-    Run Vercel CLI with the standardized production flow:
-      1) vercel pull --yes --environment=production --token=$VERCEL_TOKEN
-      2) vercel build --prod --token=$VERCEL_TOKEN
-      3) vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
+    Run Vercel CLI deployment flow.
+
+    Production mode:
+      - vercel pull (linked only)
+      - vercel build --prod
+      - vercel deploy --prebuilt --prod
+
+    Preview mode:
+      - vercel build
+      - vercel deploy --prebuilt --public
     """
-    log_think("Executing Vercel production deployment...", AGENT_NAME)
+    mode = "production" if production else "preview"
+    log_think(f"Executing Vercel {mode} deployment...", AGENT_NAME)
     append_build_log(task_dir, "Starting Vercel deployment...")
 
     if not VERCEL_TOKEN:
@@ -81,7 +93,8 @@ def run_vercel_deploy(task_dir: Path) -> str | None:
         return None
 
     env = os.environ.copy()
-    if VERCEL_USE_LINKED_PROJECT and VERCEL_ORG_ID and VERCEL_PROJECT_ID:
+    use_linked_project = VERCEL_USE_LINKED_PROJECT and not force_unlinked
+    if use_linked_project and VERCEL_ORG_ID and VERCEL_PROJECT_ID:
         env["VERCEL_ORG_ID"] = VERCEL_ORG_ID
         env["VERCEL_PROJECT_ID"] = VERCEL_PROJECT_ID
         log_think("Using linked Vercel project mode (VERCEL_USE_LINKED_PROJECT=true).", AGENT_NAME)
@@ -135,18 +148,22 @@ def run_vercel_deploy(task_dir: Path) -> str | None:
         log_warn(f"Failed to verify/install vercel CLI: {e}", AGENT_NAME)
         return None
 
-    commands = [
-        ["vercel", "pull", "--yes", "--environment=production", f"--token={VERCEL_TOKEN}"],
-        ["vercel", "build", "--prod", f"--token={VERCEL_TOKEN}"],
-        ["vercel", "deploy", "--prebuilt", "--prod", f"--token={VERCEL_TOKEN}"],
-    ]
+    commands: list[list[str]] = []
+    if production:
+        if use_linked_project:
+            commands.append(["vercel", "pull", "--yes", "--environment=production", f"--token={VERCEL_TOKEN}"])
+        commands.append(["vercel", "build", "--prod", f"--token={VERCEL_TOKEN}"])
+        commands.append(["vercel", "deploy", "--prebuilt", "--prod", f"--token={VERCEL_TOKEN}"])
+    else:
+        commands.append(["vercel", "build", f"--token={VERCEL_TOKEN}"])
+        commands.append(["vercel", "deploy", "--prebuilt", "--public", "--yes", f"--token={VERCEL_TOKEN}"])
 
     last_output = ""
     for i, cmd in enumerate(commands):
         rc, out = _run(cmd, timeout=900 if i == 1 else 600)
         last_output = out
         if rc != 0:
-            if i == 0 and not VERCEL_USE_LINKED_PROJECT:
+            if i == 0 and not use_linked_project and "pull" in cmd:
                 log_warn("vercel pull failed in unlinked mode; continuing with build/deploy.", AGENT_NAME)
                 continue
             append_build_log(task_dir, f"Vercel command failed: {' '.join(cmd[:3])} -> {out[:600]}")
@@ -279,7 +296,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 return fail("GitHub remote main branch missing; deployment blocked")
 
         # ── Deploy to Vercel ──────────────────────────────────────────
-        vercel_url = run_vercel_deploy(task_dir)
+        vercel_url = run_vercel_deploy(task_dir, production=True)
         deploy_passed = False
 
         if vercel_url:
@@ -307,29 +324,70 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["smoke_test"] = {"passed": False, "details": details}
                 append_build_log(task_dir, f"Smoke test FAILED: {details}")
 
-                # Retry deploy once
-                log_think("Retrying Vercel deployment...", AGENT_NAME)
-                vercel_url_retry = run_vercel_deploy(task_dir)
-                if vercel_url_retry:
-                    time.sleep(15)
-                    passed2, details2 = smoke_test(vercel_url_retry)
-                    if passed2:
-                        log_ok(f"Retry smoke test PASSED: {details2}", AGENT_NAME)
-                        state["vercel_url"] = vercel_url_retry
-                        state["smoke_test"] = {"passed": True, "details": details2}
-                        deploy_passed = True
-                    else:
-                        log_warn("Retry smoke test also FAILED.", AGENT_NAME)
-                        state["vercel_url"] = vercel_url_retry
-                        return fail(
-                            "Deployment URL is not publicly reachable after retry "
-                            f"({details2}). Disable Vercel protection/private access settings."
-                        )
-                else:
-                    return fail(
-                        "Deployment URL is not publicly reachable "
-                        f"({details}). Disable Vercel protection/private access settings."
+                is_protection_error = "protected/private" in details.lower() or "http 401" in details.lower() or "http 403" in details.lower()
+                if is_protection_error:
+                    log_warn("Production deployment appears protected. Retrying with unlinked public preview deployment...", AGENT_NAME)
+                    write_progress(
+                        task_dir,
+                        task_id,
+                        "deploying",
+                        "Retrying with public preview",
+                        "Production URL is protected; creating public preview deployment",
+                        "Switching to unlinked preview deploy mode...",
+                        98.0,
+                        subtask_id=101,
                     )
+                    preview_url = run_vercel_deploy(task_dir, production=False, force_unlinked=True)
+                    if preview_url:
+                        passed_preview, preview_details = smoke_test(preview_url)
+                        if passed_preview:
+                            log_ok(f"Public preview smoke test PASSED: {preview_details}", AGENT_NAME)
+                            state["vercel_url"] = preview_url
+                            state["smoke_test"] = {"passed": True, "details": preview_details}
+                            state["deployment_mode"] = "preview_public_fallback"
+                            deploy_passed = True
+                        else:
+                            state["vercel_url"] = preview_url
+                            return fail(
+                                "Production deployment is protected and preview fallback is not publicly reachable "
+                                f"({preview_details})."
+                            )
+                    else:
+                        return fail(
+                            "Production deployment is protected and public preview fallback deployment failed."
+                        )
+
+                    # Continue without retrying protected production deploy.
+                    vercel_url = state.get("vercel_url")
+
+                    if not (vercel_url and deploy_passed):
+                        return fail("Public deployment URL unavailable after fallback")
+                else:
+
+                    # Retry deploy once for non-protection transient failures.
+                    log_think("Retrying Vercel deployment...", AGENT_NAME)
+                    vercel_url_retry = run_vercel_deploy(task_dir, production=True)
+                    if vercel_url_retry:
+                        time.sleep(15)
+                        passed2, details2 = smoke_test(vercel_url_retry)
+                        if passed2:
+                            log_ok(f"Retry smoke test PASSED: {details2}", AGENT_NAME)
+                            state["vercel_url"] = vercel_url_retry
+                            state["smoke_test"] = {"passed": True, "details": details2}
+                            vercel_url = vercel_url_retry
+                            deploy_passed = True
+                        else:
+                            log_warn("Retry smoke test also FAILED.", AGENT_NAME)
+                            state["vercel_url"] = vercel_url_retry
+                            return fail(
+                                "Deployment URL is not publicly reachable after retry "
+                                f"({details2})."
+                            )
+                    else:
+                        return fail(
+                            "Deployment URL is not publicly reachable "
+                            f"({details})."
+                        )
         else:
             log_warn("Vercel deployment skipped or failed.", AGENT_NAME)
             vercel_url = None
