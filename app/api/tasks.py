@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -89,9 +92,6 @@ async def get_execution_logs(execution_id: int) -> dict[str, Any]:
     Fallback source is in-memory progress steps so the UI still shows
     useful live activity even when the log file is missing/empty.
     """
-    from datetime import datetime, timezone
-    from pathlib import Path
-
     from app.config import settings
     from app.orchestrator.progress import progress_tracker
     
@@ -107,8 +107,21 @@ async def get_execution_logs(execution_id: int) -> dict[str, Any]:
     candidates: list[Path] = []
     if execution.workspace_path:
         candidates.append(Path(execution.workspace_path))
-    # Fallback to canonical workspace root path used by WorkspaceManager.
-    candidates.append(Path(settings.WORKSPACE_ROOT) / f"task-{execution_id}")
+    # Fallbacks for orchestrator and legacy swarm workspace layouts.
+    workspace_roots = {
+        Path(settings.WORKSPACE_ROOT),
+        Path(settings.AGENT_WORKSPACE_DIR),
+        Path(__file__).resolve().parents[2] / "agent_works",
+    }
+    for root in workspace_roots:
+        candidates.extend(
+            [
+                root / f"task-{execution_id}",
+                root / f"task_{execution_id}",
+                root / f"task-{execution.oriexa_task_id}",
+                root / f"task_{execution.oriexa_task_id}",
+            ]
+        )
 
     seen: set[str] = set()
     workspace_candidates: list[Path] = []
@@ -135,6 +148,46 @@ async def get_execution_logs(execution_id: int) -> dict[str, Any]:
         except Exception:
             # Try next candidate before falling back to progress steps.
             continue
+
+    # Fallback 2: legacy/worker progress file when .build_log is missing.
+    for workspace in workspace_candidates:
+        progress_file = workspace / "progress.jsonl"
+        if not progress_file.exists() or not progress_file.is_file():
+            continue
+        try:
+            lines = [ln for ln in progress_file.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+        except Exception:
+            continue
+        if not lines:
+            continue
+
+        rendered: list[str] = []
+        for raw in lines[-120:]:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            ts_value = payload.get("timestamp")
+            ts_text = "--:--:--"
+            try:
+                if isinstance(ts_value, (int, float)):
+                    ts_text = datetime.fromtimestamp(float(ts_value), tz=timezone.utc).strftime("%H:%M:%S")
+                elif isinstance(ts_value, str) and ts_value.strip():
+                    dt = datetime.fromisoformat(ts_value.replace("Z", "+00:00"))
+                    ts_text = dt.astimezone(timezone.utc).strftime("%H:%M:%S")
+            except Exception:
+                pass
+
+            phase = str(payload.get("phase") or "progress").lower()
+            msg = str(payload.get("detail") or payload.get("description") or payload.get("title") or "").strip()
+            if msg:
+                rendered.append(f"[{ts_text}] [{phase}] {msg}")
+
+        if rendered:
+            return {"ok": True, "data": "\n".join(rendered)}
 
     # Fallback: synthesize logs from live progress steps.
     steps = progress_tracker.get_steps(execution_id)

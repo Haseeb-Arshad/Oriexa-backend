@@ -38,6 +38,7 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "") or os.environ.get("ANTHROPIC
 KIMI_KEY = os.environ.get("Kimi_Key", "") or os.environ.get("KIMI_KEY", "")
 MOONSHOT_API_KEY = os.environ.get("MOONSHOT_API_KEY", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_TIMEOUT_SECONDS = float(os.environ.get("OPENROUTER_TIMEOUT_SECONDS", "120"))
 
 DEFAULT_CAPABILITIES = ["nextjs", "react", "vite", "javascript", "typescript", "tailwindcss", "frontend", "web-development"]
 
@@ -147,9 +148,19 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
         # Map logical providers to the .env configured model tiers
         model_str = os.environ.get("STRONG_MODEL", "openai/gpt-5.3-codex")
         if provider in ["claude", "claude-sonnet"]:
-            model_str = os.environ.get("THINKING_MODEL", "anthropic/claude-sonnet-4.6")
+            model_str = (
+                os.environ.get("CLAUDE_MODEL")
+                or os.environ.get("CODING_PLANNING_MODEL")
+                or os.environ.get("STRONG_MODEL")
+                or "anthropic/claude-sonnet-4.6"
+            )
         elif provider == "kimi":
-            model_str = os.environ.get("FAST_MODEL", "z-ai/glm-5")
+            model_str = (
+                os.environ.get("KIMI_MODEL")
+                or os.environ.get("THINKING_MODEL")
+                or os.environ.get("FAST_MODEL")
+                or "moonshot/kimi-k2.5-thinking"
+            )
         elif provider == "trinity":
             model_str = os.environ.get("DEFAULT_MODEL", "z-ai/glm-5")
             
@@ -171,7 +182,7 @@ def llm_call(system: str, user: str, max_tokens: int = 2048, provider: str = "ki
                 "temperature": 0.3,
                 "max_tokens": max_tokens,
             },
-            timeout=3600.0,
+            timeout=OPENROUTER_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
         data: dict = resp.json()

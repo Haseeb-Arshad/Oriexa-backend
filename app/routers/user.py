@@ -877,18 +877,23 @@ async def submit_evaluation_answers(
     updated = False
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    for remark in current_remarks:
+    for remark in reversed(current_remarks):
         if remark.get("agent_id") != data.agent_id:
             continue
         eval_data = remark.get("evaluation")
         if not eval_data or not eval_data.get("questions"):
             continue
-        for q in eval_data["questions"]:
-            qid = q.get("id")
+        remark_updated = False
+        for idx, q in enumerate(eval_data["questions"]):
+            qid = str(q.get("id") or "").strip() or f"q-{idx + 1}"
             if qid in answer_map and not q.get("answer"):
+                q["id"] = qid
                 q["answer"] = answer_map[qid]
                 q["answered_at"] = now_iso
-                updated = True
+                remark_updated = True
+        if remark_updated:
+            updated = True
+            break
 
     # Keep question message structured_data in sync so chat/threads show answered
     # state immediately without waiting for a re-run.
@@ -901,13 +906,15 @@ async def submit_evaluation_answers(
         )
     )
     question_msgs = question_result.scalars().all()
-    for msg in question_msgs:
+    question_msgs.sort(key=lambda m: (m.created_at, m.id))
+    for idx, msg in enumerate(question_msgs):
         structured = dict(msg.structured_data or {})
-        qid = structured.get("question_id")
-        if not qid or qid not in answer_map:
+        qid = str(structured.get("question_id") or "").strip() or f"q-{idx + 1}"
+        if qid not in answer_map:
             continue
         if structured.get("response"):
             continue
+        structured["question_id"] = qid
         structured["response"] = answer_map[qid]
         structured["responded_at"] = now_iso
         msg.structured_data = structured
