@@ -1,6 +1,7 @@
 """All /api/v1/tasks/* endpoints — port of Oriexa/src/app/api/v1/tasks/"""
 
 from datetime import datetime, timezone
+import uuid
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -1768,12 +1769,32 @@ async def add_task_remark(
     new_remarks.append(remark_entry)
     task.agent_remarks = new_remarks
 
-    # Extract questions from evaluation (if any)
+    # Extract questions from evaluation (if any) and normalize IDs so responses
+    # can always be mapped back to task.agent_remarks.
     questions = []
     if data.evaluation and isinstance(data.evaluation, dict):
         questions = data.evaluation.get("questions", [])
         if not isinstance(questions, list):
             questions = []
+        normalized_questions = []
+        for idx, q in enumerate(questions):
+            if not isinstance(q, dict):
+                continue
+            qid = str(q.get("id") or "").strip()
+            if not qid:
+                qid = f"q-{idx + 1}-{uuid.uuid4().hex[:8]}"
+            q["id"] = qid
+            normalized_questions.append(q)
+        questions = normalized_questions
+
+        if "evaluation" in remark_entry:
+            remark_entry["evaluation"] = {
+                **remark_entry["evaluation"],
+                "questions": questions,
+            }
+            # Keep task.agent_remarks in sync with normalized question IDs.
+            new_remarks[-1] = remark_entry
+            task.agent_remarks = new_remarks
 
     # Message type routing:
     # • "evaluation" — remark WITH questions (only shown in Feedback section, never in Chat)
@@ -1791,6 +1812,9 @@ async def add_task_remark(
     )
     session.add(msg)
     await session.flush()
+    remark_entry["message_id"] = msg.id
+    new_remarks[-1] = remark_entry
+    task.agent_remarks = new_remarks
 
     # Broadcast the feedback message
     event_broadcaster.broadcast(task.poster_id, "message_created", {
@@ -1850,6 +1874,7 @@ async def add_task_remark(
             content=q["text"],
             message_type="question",
             structured_data=structured,
+            parent_id=msg.id,
         )
         session.add(q_msg)
         await session.flush()

@@ -228,10 +228,17 @@ async def deploy_to_vercel(workspace_path: str) -> dict[str, Any]:
     vercel_token = settings.VERCEL_TOKEN
     vercel_org = settings.VERCEL_ORG_ID
     vercel_project = settings.VERCEL_PROJECT_ID
+    use_linked_project = bool(settings.VERCEL_USE_LINKED_PROJECT)
 
     # Preferred: use Vercel CLI
     if vercel_token:
-        return await _deploy_via_vercel_cli(workspace_path, vercel_token, vercel_org, vercel_project)
+        return await _deploy_via_vercel_cli(
+            workspace_path,
+            vercel_token,
+            vercel_org,
+            vercel_project,
+            use_linked_project,
+        )
 
     # Fallback: legacy endpoint
     endpoint = settings.VERCEL_DEPLOY_ENDPOINT
@@ -246,6 +253,7 @@ async def _deploy_via_vercel_cli(
     token: str,
     org_id: str,
     project_id: str,
+    use_linked_project: bool,
 ) -> dict[str, Any]:
     """Deploy using the Vercel CLI (vercel --prod).
 
@@ -266,18 +274,27 @@ async def _deploy_via_vercel_cli(
         if install.exit_code != 0:
             return {"success": False, "error": f"Failed to install Vercel CLI: {install.stderr[:300]}"}
 
-    # Write .vercel/project.json to link the workspace to the project
-    if org_id and project_id:
+    # Write .vercel/project.json only when explicitly enabled.
+    # Keeping this off by default avoids accidentally deploying into a
+    # protected/private linked project.
+    if use_linked_project and org_id and project_id:
         vercel_dir = ws / ".vercel"
         vercel_dir.mkdir(exist_ok=True)
         project_json = {"orgId": org_id, "projectId": project_id}
         (vercel_dir / "project.json").write_text(json.dumps(project_json), encoding="utf-8")
+    elif not use_linked_project:
+        linked_file = ws / ".vercel" / "project.json"
+        if linked_file.exists():
+            try:
+                linked_file.unlink()
+            except OSError:
+                pass
 
     # Set env vars for vercel CLI auth
     env_prefix = f"VERCEL_TOKEN={token}"
-    if org_id:
+    if use_linked_project and org_id:
         env_prefix += f" VERCEL_ORG_ID={org_id}"
-    if project_id:
+    if use_linked_project and project_id:
         env_prefix += f" VERCEL_PROJECT_ID={project_id}"
 
     # Pull project settings
@@ -315,19 +332,7 @@ async def _deploy_via_vercel_cli(
     if deploy_result.exit_code != 0:
         return {"success": False, "error": f"Vercel deploy failed: {output[:500]}"}
 
-    # Extract the deployment URL from output
-    preview_url = ""
-    for line in output.splitlines():
-        line = line.strip()
-        if line.startswith("https://") and "vercel" in line:
-            preview_url = line
-            break
-
-    if not preview_url:
-        # Try to find any URL in output
-        url_match = re.search(r"https://[^\s]+\.vercel\.app[^\s]*", output)
-        if url_match:
-            preview_url = url_match.group(0)
+    preview_url = _extract_public_vercel_url(output)
 
     return {
         "success": True,
@@ -335,6 +340,39 @@ async def _deploy_via_vercel_cli(
         "claim_url": "",
         "deployment_id": "",
     }
+
+
+def _extract_public_vercel_url(cli_output: str) -> str:
+    """Extract a public deployment URL (*.vercel.app) from Vercel CLI logs.
+
+    Never return dashboard/inspect URLs (vercel.com) because those require
+    account login and are not publicly accessible.
+    """
+    if not cli_output:
+        return ""
+
+    # 1) Prefer explicit production aliases shown by CLI
+    for line in cli_output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "https://" not in line:
+            continue
+
+        matches = re.findall(r"https://[^\s\]\)]+", line)
+        for url in matches:
+            if ".vercel.app" not in url:
+                continue
+            if "vercel.com" in url:
+                continue
+            return url.rstrip(".,)")
+
+    # 2) Fallback global regex scan
+    for url in re.findall(r"https://[^\s\]\)]+", cli_output):
+        if ".vercel.app" in url and "vercel.com" not in url:
+            return url.rstrip(".,)")
+
+    return ""
 
 
 async def _deploy_via_endpoint(workspace_path: str, endpoint: str) -> dict[str, Any]:

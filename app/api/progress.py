@@ -30,48 +30,50 @@ async def stream_progress(execution_id: int):
     """
 
     async def event_generator():
-        # First send all existing steps as a burst
+        # Prefer the JSONL progress file when available because it works across
+        # processes/workers and keeps SSE live even if request handling is not on
+        # the same worker as the orchestrator execution loop.
+        legacy_file = await _resolve_legacy_progress_file(execution_id)
+        if legacy_file and legacy_file.exists():
+            last_line_count = 0
+            idle = 0
+            while True:
+                try:
+                    content = legacy_file.read_text(encoding="utf-8")
+                    lines = [ln for ln in content.splitlines() if ln.strip()]
+                except Exception:
+                    lines = []
+
+                while last_line_count < len(lines):
+                    raw = lines[last_line_count]
+                    last_line_count += 1
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
+                        continue
+                    if "index" not in payload:
+                        payload["index"] = last_line_count - 1
+                    yield f"event: progress\ndata: {json.dumps(payload)}\n\n"
+                    idle = 0
+
+                if lines:
+                    last = _safe_json_line(lines[-1])
+                    phase = str(last.get("phase", "")).lower() if last else ""
+                    if phase in {"delivery", "failed", "complete", "completed", "delivered"}:
+                        return
+
+                idle += 1
+                yield f": heartbeat {int(time.time())}\n\n"
+                if idle > 300:
+                    return
+                await asyncio.sleep(2)
+            return
+
+        # In-memory fallback (single-process local dev).
         existing = progress_tracker.get_steps(execution_id)
         if existing:
             for i, step in enumerate(existing):
                 yield _format_sse(step, i)
-        else:
-            # Fallback for legacy pipeline: stream progress.jsonl directly.
-            legacy_file = await _resolve_legacy_progress_file(execution_id)
-            if legacy_file and legacy_file.exists():
-                last_line_count = 0
-                idle = 0
-                while True:
-                    try:
-                        content = legacy_file.read_text(encoding="utf-8")
-                        lines = [ln for ln in content.splitlines() if ln.strip()]
-                    except Exception:
-                        lines = []
-
-                    while last_line_count < len(lines):
-                        raw = lines[last_line_count]
-                        last_line_count += 1
-                        try:
-                            payload = json.loads(raw)
-                        except Exception:
-                            continue
-                        if "index" not in payload:
-                            payload["index"] = last_line_count - 1
-                        yield f"event: progress\ndata: {json.dumps(payload)}\n\n"
-                        idle = 0
-
-                    if lines:
-                        last = _safe_json_line(lines[-1])
-                        phase = str(last.get("phase", "")).lower() if last else ""
-                        if phase in {"delivery", "failed", "complete", "completed", "delivered"}:
-                            return
-
-                    idle += 1
-                    yield f": heartbeat {int(time.time())}\n\n"
-                    if idle > 300:
-                        return
-                    await asyncio.sleep(2)
-                return
 
         # Then stream new steps as they arrive
         last_idx = len(existing)
@@ -97,40 +99,54 @@ async def stream_progress(execution_id: int):
 async def get_progress(execution_id: int) -> dict[str, Any]:
     """Get all progress steps for an execution (non-streaming)."""
     steps = progress_tracker.get_steps(execution_id)
-    if not steps:
-        legacy_steps = await _load_legacy_steps(execution_id)
-        if legacy_steps:
-            phases = {"delivery", "failed", "complete", "completed", "delivered"}
-            latest_phase = str(legacy_steps[-1].get("phase", "")).lower()
-            return {
-                "ok": True,
-                "data": {
-                    "execution_id": execution_id,
-                    "steps": legacy_steps,
-                    "is_complete": latest_phase in phases,
-                    "current_phase": legacy_steps[-1].get("phase"),
-                },
-            }
+    memory_steps = [
+        {
+            "index": i,
+            "subtask_id": s.metadata.get("subtask_id") if isinstance(s.metadata, dict) else None,
+            "phase": s.phase,
+            "title": s.title,
+            "description": s.description,
+            "detail": s.detail,
+            "progress_pct": s.progress_pct,
+            "timestamp": s.timestamp,
+            "metadata": s.metadata,
+        }
+        for i, s in enumerate(steps)
+    ]
+
+    legacy_steps = await _load_legacy_steps(execution_id)
+    merged: dict[int, dict[str, Any]] = {}
+    for item in memory_steps:
+        if isinstance(item.get("index"), int):
+            merged[item["index"]] = item
+    for item in legacy_steps:
+        if isinstance(item.get("index"), int):
+            merged[item["index"]] = item
+
+    ordered_steps = [merged[k] for k in sorted(merged)]
+    if not ordered_steps:
+        ordered_steps = legacy_steps
+
+    if ordered_steps:
+        phases = {"delivery", "failed", "complete", "completed", "delivered"}
+        latest_phase = str(ordered_steps[-1].get("phase", "")).lower()
+        return {
+            "ok": True,
+            "data": {
+                "execution_id": execution_id,
+                "steps": ordered_steps,
+                "is_complete": latest_phase in phases,
+                "current_phase": ordered_steps[-1].get("phase"),
+            },
+        }
 
     return {
         "ok": True,
         "data": {
             "execution_id": execution_id,
-            "steps": [
-                {
-                    "index": i,
-                    "phase": s.phase,
-                    "title": s.title,
-                    "description": s.description,
-                    "detail": s.detail,
-                    "progress_pct": s.progress_pct,
-                    "timestamp": s.timestamp,
-                    "metadata": s.metadata,
-                }
-                for i, s in enumerate(steps)
-            ],
-            "is_complete": bool(steps and steps[-1].phase in ("delivery", "failed")),
-            "current_phase": steps[-1].phase if steps else None,
+            "steps": [],
+            "is_complete": False,
+            "current_phase": None,
         },
     }
 
@@ -156,8 +172,18 @@ async def list_active() -> dict[str, Any]:
 
 def _format_sse(step, index: int) -> str:
     """Format a progress step as an SSE event string."""
+    subtask_id = None
+    try:
+        if isinstance(step.metadata, dict):
+            maybe = step.metadata.get("subtask_id")
+            if isinstance(maybe, int):
+                subtask_id = maybe
+    except Exception:
+        subtask_id = None
+
     data = json.dumps({
         "index": index,
+        "subtask_id": subtask_id,
         "phase": step.phase,
         "title": step.title,
         "description": step.description,

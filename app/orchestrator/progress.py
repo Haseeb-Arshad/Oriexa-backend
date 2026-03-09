@@ -8,8 +8,8 @@ and timing metadata.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-from dataclasses import dataclass, field
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -162,12 +162,34 @@ class ProgressTracker:
 
         self._steps[execution_id].append(step)
 
+        step_index = len(self._steps[execution_id]) - 1
+
         # Notify all waiting subscribers
         event = self._events.get(execution_id)
         if event:
             event.set()
-            # Reset for next wait
-            self._events[execution_id] = asyncio.Event()
+
+        # Write JSONL progress snapshot for cross-process polling/SSE fallback.
+        # This keeps activity updates live even when request handling and
+        # orchestrator execution happen in different workers.
+        try:
+            workspace = Path(settings.WORKSPACE_ROOT) / f"task-{execution_id}"
+            workspace.mkdir(parents=True, exist_ok=True)
+            progress_file = workspace / "progress.jsonl"
+            payload = {
+                "index": step_index,
+                "phase": step.phase,
+                "title": step.title,
+                "description": step.description,
+                "detail": step.detail,
+                "progress_pct": step.progress_pct,
+                "timestamp": step.timestamp,
+                "metadata": step.metadata,
+            }
+            with open(progress_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+        except Exception:
+            pass
 
         # Write to .build_log in workspace
         try:
@@ -211,10 +233,12 @@ class ProgressTracker:
                 self._events[execution_id] = asyncio.Event()
 
             try:
+                event = self._events[execution_id]
                 await asyncio.wait_for(
-                    self._events[execution_id].wait(),
+                    event.wait(),
                     timeout=30.0,  # Heartbeat every 30s
                 )
+                event.clear()
             except asyncio.TimeoutError:
                 # Send a keepalive — yield None to indicate heartbeat
                 yield -1, None

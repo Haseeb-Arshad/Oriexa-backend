@@ -180,6 +180,38 @@ async def _persist_subtask_results(
         logger.warning("Failed to persist subtask results for execution %d: %s", execution_id, exc)
 
 
+async def _mark_subtask_in_progress(execution_id: int, order_index: int = 0) -> None:
+    """Mark a subtask as in-progress so the UI roadmap updates during execution."""
+    if execution_id <= 0:
+        return
+    try:
+        from app.db.engine import async_session
+        from app.db.models import OrchSubtask
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(OrchSubtask)
+                .where(OrchSubtask.execution_id == execution_id)
+                .order_by(OrchSubtask.order_index)
+            )
+            rows = result.scalars().all()
+            if not rows:
+                return
+
+            # If requested index does not exist, fallback to the first pending row.
+            target = next((row for row in rows if row.order_index == order_index), None)
+            if target is None:
+                target = next((row for row in rows if row.status in {"pending", "skipped", "failed"}), None)
+            if target is None:
+                return
+
+            if target.status not in {"completed", "in_progress"}:
+                target.status = "in_progress"
+                await session.commit()
+    except Exception as exc:
+        logger.warning("Failed to mark subtask in progress for execution %d: %s", execution_id, exc)
+
+
 async def _upsert_plan_subtasks(
     execution_id: int,
     plan: list[dict[str, Any]],
@@ -269,14 +301,14 @@ async def _update_execution_status(execution_id: int, status: str) -> None:
     """Update the orchestrator execution status in the database."""
     try:
         from app.db.engine import async_session
-        from app.db.models import OrchestratorExecution
+        from app.db.models import OrchTaskExecution
         from sqlalchemy import update
         from datetime import datetime, timezone
 
         async with async_session() as session:
             await session.execute(
-                update(OrchestratorExecution)
-                .where(OrchestratorExecution.id == execution_id)
+                update(OrchTaskExecution)
+                .where(OrchTaskExecution.id == execution_id)
                 .values(status=status, updated_at=datetime.now(timezone.utc))
             )
             await session.commit()
@@ -633,6 +665,8 @@ async def execution_node(state: TaskState) -> dict[str, Any]:
     progress_tracker.add_step(eid, "execution", "writing",
         detail="Fingers on keyboard — creating files, writing implementations, wiring things together")
 
+    await _mark_subtask_in_progress(eid, int(state.get("current_subtask_index", 0)))
+
     # Frontend tasks use z-ai/glm-5 as the primary execution model
     task_type = state.get("task_type", "general")
     exec_tier = (
@@ -701,6 +735,8 @@ async def complex_execution_node(state: TaskState) -> dict[str, Any]:
 
     progress_tracker.add_step(eid, "complex_execution", "writing",
         detail="Building the implementation with careful attention to every detail")
+
+    await _mark_subtask_in_progress(eid, int(state.get("current_subtask_index", 0)))
 
     # Frontend complex tasks escalate to gpt-5.3-codex (CODING_STRONG)
     task_type = state.get("task_type", "general")

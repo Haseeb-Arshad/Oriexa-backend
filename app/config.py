@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     VERCEL_TOKEN: str = ""  # Vercel CLI token (preferred over VERCEL_DEPLOY_ENDPOINT)
     VERCEL_ORG_ID: str = ""  # Vercel team/org ID
     VERCEL_PROJECT_ID: str = ""  # Vercel project ID
+    VERCEL_USE_LINKED_PROJECT: bool = False  # Link to fixed project only when explicitly enabled
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

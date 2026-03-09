@@ -180,6 +180,30 @@ async def get_user_task_detail(
         for s in sub_res.all()
     ]
 
+    msg_res = await session.execute(
+        select(TaskMessage)
+        .where(TaskMessage.task_id == task_id)
+        .order_by(asc(TaskMessage.created_at), asc(TaskMessage.id))
+        .limit(300)
+    )
+    messages = [
+        {
+            "id": m.id,
+            "task_id": m.task_id,
+            "sender_type": m.sender_type,
+            "sender_id": m.sender_id,
+            "sender_name": m.sender_name,
+            "content": m.content,
+            "message_type": m.message_type,
+            "structured_data": m.structured_data,
+            "parent_id": m.parent_id,
+            "claim_id": m.claim_id,
+            "is_read": m.is_read,
+            "created_at": _isoformat(m.created_at),
+        }
+        for m in msg_res.scalars().all()
+    ]
+
     return {
         "id": task.id,
         "title": task.title,
@@ -196,7 +220,8 @@ async def get_user_task_detail(
         "agent_remarks": task.agent_remarks,
         "claims": claims,
         "deliverables": deliverables,
-        "activity": activity
+        "activity": activity,
+        "messages": messages,
     }
 
 
@@ -780,6 +805,7 @@ async def respond_to_question(
                 for q in qs:
                     if q.get("id") == question_id and not q.get("answer"):
                         q["answer"] = request.response
+                        q["answered_at"] = responded_at
                         break
                 else:
                     continue
@@ -849,6 +875,7 @@ async def submit_evaluation_answers(
     answer_map = {a.question_id: a.answer for a in data.answers}
     current_remarks = list(task.agent_remarks or [])
     updated = False
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     for remark in current_remarks:
         if remark.get("agent_id") != data.agent_id:
@@ -860,8 +887,31 @@ async def submit_evaluation_answers(
             qid = q.get("id")
             if qid in answer_map and not q.get("answer"):
                 q["answer"] = answer_map[qid]
-                q["answered_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                q["answered_at"] = now_iso
                 updated = True
+
+    # Keep question message structured_data in sync so chat/threads show answered
+    # state immediately without waiting for a re-run.
+    question_result = await session.execute(
+        select(TaskMessage).where(
+            TaskMessage.task_id == task_id,
+            TaskMessage.sender_type == "agent",
+            TaskMessage.message_type == "question",
+            TaskMessage.sender_id == data.agent_id,
+        )
+    )
+    question_msgs = question_result.scalars().all()
+    for msg in question_msgs:
+        structured = dict(msg.structured_data or {})
+        qid = structured.get("question_id")
+        if not qid or qid not in answer_map:
+            continue
+        if structured.get("response"):
+            continue
+        structured["response"] = answer_map[qid]
+        structured["responded_at"] = now_iso
+        msg.structured_data = structured
+        updated = True
 
     if not updated:
         raise HTTPException(status_code=404, detail="No matching questions found")
