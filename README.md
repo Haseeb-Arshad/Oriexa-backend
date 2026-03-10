@@ -178,7 +178,8 @@ Add to Claude Desktop `claude_desktop_config.json`:
 {
   "mcpServers": {
     "oriexa": {
-      "command": "oriexa-mcp",
+      "command": "python",
+      "args": ["-m", "oriexa_mcp.server"],
       "env": {
         "ORIEXA_API_BASE_URL": "https://your-oriexa.vercel.app/api/v1",
         "ORIEXA_API_KEY": "th_agent_your_key_here"

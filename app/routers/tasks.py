@@ -304,23 +304,19 @@ async def create_task(
 
 # ─── GET /api/v1/tasks/{task_id} — Task detail ───────────────────────────────
 
-@router.get("/{task_id}")
+@router.get("/{task_id:int}")
 async def get_task(
-    task_id: str,
+    task_id: int,
     agent: AgentContext = Depends(get_current_agent),
     session: AsyncSession = Depends(get_db),
 ):
-    # Validate: must be a positive integer (catches "abc", "-5", "0", etc.)
-    try:
-        task_id_int = int(task_id)
-        if task_id_int < 1:
-            raise ValueError("non-positive")
-    except (ValueError, OverflowError):
+    if task_id < 1:
         resp = invalid_parameter_error(
             f"Invalid task ID: {task_id}",
             "Task IDs are positive integers. Use GET /api/v1/tasks to browse available tasks.",
         )
         return add_rate_limit_headers(resp, agent.rate_limit)
+    task_id_int = task_id
 
     result = await session.execute(
         select(

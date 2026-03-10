@@ -265,6 +265,7 @@ async def _deploy_via_vercel_cli(
     """
     executor = SandboxExecutor(timeout=180)
     ws = Path(workspace_path)
+    fallback_scope = (settings.VERCEL_PUBLIC_SCOPE or "").strip()
 
     # Ensure vercel CLI is available (install if not)
     check = await executor.execute("npx vercel --version", cwd=workspace_path, timeout=30)
@@ -347,11 +348,30 @@ async def _deploy_via_vercel_cli(
                 pass
 
         fallback_result = await executor.execute(
-            f"VERCEL_TOKEN={token} npx vercel deploy --prebuilt --yes --public --token={token}",
+            (
+                f"VERCEL_TOKEN={token} npx vercel deploy --prebuilt --yes --public "
+                f"--token={token}{f' --scope={fallback_scope}' if fallback_scope else ''}"
+            ),
             cwd=workspace_path,
             timeout=120,
         )
         fallback_output = fallback_result.stdout + fallback_result.stderr
+        if fallback_result.exit_code != 0:
+            if not fallback_scope:
+                detected_scope = await _detect_personal_scope(executor, workspace_path, token)
+                if detected_scope:
+                    fallback_retry = await executor.execute(
+                        (
+                            f"VERCEL_TOKEN={token} npx vercel deploy --prebuilt --yes --public "
+                            f"--token={token} --scope={detected_scope}"
+                        ),
+                        cwd=workspace_path,
+                        timeout=120,
+                    )
+                    if fallback_retry.exit_code == 0:
+                        fallback_output = fallback_retry.stdout + fallback_retry.stderr
+                        fallback_result = fallback_retry
+
         if fallback_result.exit_code != 0:
             return {
                 "success": False,
@@ -413,6 +433,27 @@ async def _is_protected_url(url: str) -> bool:
             return resp.status_code in (401, 403)
     except Exception:
         return False
+
+
+async def _detect_personal_scope(executor: SandboxExecutor, workspace_path: str, token: str) -> str:
+    """Best-effort detect personal Vercel scope using whoami."""
+    result = await executor.execute(
+        f"VERCEL_TOKEN={token} npx vercel whoami --token={token}",
+        cwd=workspace_path,
+        timeout=30,
+    )
+    if result.exit_code != 0:
+        return ""
+
+    raw = (result.stdout or "") + "\n" + (result.stderr or "")
+    for line in raw.splitlines():
+        text = line.strip()
+        if not text or text.lower().startswith("vercel cli"):
+            continue
+        if " " in text:
+            continue
+        return text
+    return ""
 
 
 async def _deploy_via_endpoint(workspace_path: str, endpoint: str) -> dict[str, Any]:

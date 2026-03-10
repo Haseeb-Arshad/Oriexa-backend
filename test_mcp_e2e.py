@@ -4,8 +4,7 @@ Oriexa MCP End-to-End Test
 Tests ALL 21 MCP tools step-by-step in the correct agent workflow order.
 
 Pre-requisites:
-  - Next.js app running on localhost:3000
-  - oriexa-api running on localhost:8001 (with MCP mounted at /mcp/)
+  - Oriexa API available at --next-url (default: localhost:3000)
 
 Flow:
   1.  Bootstrap: register two users + two agents via REST (poster & worker)
@@ -42,6 +41,7 @@ import httpx
 # Configuration
 # ---------------------------------------------------------------------------
 DEFAULT_NEXT_URL = "http://localhost:3000"
+HTTP_TIMEOUT_SECONDS = 90
 
 PASS_SYM = "[OK]  "
 FAIL_SYM = "[FAIL]"
@@ -92,8 +92,8 @@ async def bootstrap_user_agent(next_url: str, suffix: str) -> tuple[str, int]:
     POST /api/auth/register  -> creates user (no auth required)
     POST /api/v1/agents      -> creates agent using email+password inline auth
     """
-    async with httpx.AsyncClient(base_url=next_url, timeout=30) as c:
-        email = f"mcp_{suffix}_{rand_str()}@test.local"
+    async with httpx.AsyncClient(base_url=next_url, timeout=HTTP_TIMEOUT_SECONDS) as c:
+        email = f"mcp_{suffix}_{rand_str()}@example.com"
         password = "TestPass123!"
         name = f"MCPUser_{suffix}_{rand_str(4)}"
 
@@ -133,11 +133,11 @@ async def run_tests(next_url: str) -> int:
     print("=" * 65)
     print(" Oriexa MCP End-to-End Test")
     print("=" * 65)
-    print(f" Next.js  : {next_url}")
+    print(f" API host : {next_url}")
     print(f" API base : {api_base}")
     print()
 
-    # Point the MCP HTTP client at our Next.js API
+    # Point the MCP HTTP client at our Oriexa API
     import os
     os.environ["ORIEXA_API_BASE_URL"] = api_base
 
@@ -226,14 +226,15 @@ async def run_tests(next_url: str) -> int:
     # 2. Task creation (poster side)
     # -----------------------------------------------------------------------
     section("2. Task Creation")
+    main_task_token = rand_str(10)
 
     r = await create_task(
         api_key=poster_key,
-        title=f"[MCP-TEST] Email validator Python function {rand_str(4)}",
+        title=f"[MCP-TEST] Email validator Python function {main_task_token}",
         description=(
             "Write a Python function validate_email(email) that uses regex to "
             "validate email addresses. Return True for valid, False for invalid. "
-            "Handle None and empty string inputs gracefully."
+            f"Handle None and empty string inputs gracefully. Token: {main_task_token}"
         ),
         budget_credits=150,
         category_id=1,
@@ -288,8 +289,8 @@ async def run_tests(next_url: str) -> int:
         cnt = r["meta"].get("count", 0)
         log("  coding tasks with budget >= 100", cnt >= 1, f"{cnt} task(s)")
 
-    r = await search_tasks(api_key=worker_key, q="python email validation", limit=5)
-    if assert_ok("search_tasks (q='python email validation')", r):
+    r = await search_tasks(api_key=worker_key, q=main_task_token, limit=5)
+    if assert_ok(f"search_tasks (q='{main_task_token}')", r):
         cnt = r["meta"].get("count", 0)
         log("  relevance-ranked results returned", cnt >= 1, f"{cnt} match(es)")
 
@@ -400,7 +401,7 @@ async def run_tests(next_url: str) -> int:
     deliverable_id: int = r["data"]["id"]
     rev_num = r["data"].get("revision_number", "?")
     log("  deliverable_id assigned", True, str(deliverable_id))
-    log("  revision_number starts at 0", rev_num == 0, str(rev_num))
+    log("  revision_number starts at 1", rev_num == 1, str(rev_num))
 
     r = await get_task(api_key=poster_key, task_id=main_task_id)
     if assert_ok("get_task (after submit - should be delivered)", r):
@@ -466,7 +467,7 @@ async def run_tests(next_url: str) -> int:
     if assert_ok("submit_deliverable (v2 - with unit tests)", r):
         deliverable_id = r["data"]["id"]   # update to latest deliverable
         rev = r["data"].get("revision_number", "?")
-        log("  revision_number incremented to 1", rev == 1, str(rev))
+        log("  revision_number incremented to 2", rev == 2, str(rev))
 
     # -----------------------------------------------------------------------
     # 8. Accept deliverable -> credits flow

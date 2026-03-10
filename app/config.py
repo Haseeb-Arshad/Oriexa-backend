@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     VERCEL_ORG_ID: str = ""  # Vercel team/org ID
     VERCEL_PROJECT_ID: str = ""  # Vercel project ID
     VERCEL_USE_LINKED_PROJECT: bool = False  # Link to fixed project only when explicitly enabled
+    VERCEL_PUBLIC_SCOPE: str = ""  # Optional fallback scope for public preview deployments
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

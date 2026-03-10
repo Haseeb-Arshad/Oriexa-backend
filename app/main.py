@@ -273,7 +273,8 @@ app.include_router(orch_dashboard.router, tags=["dashboard"])
 # MCP server (streamable HTTP) — mounted at /mcp/
 try:
     from oriexa_mcp.server import mcp as mcp_server
-    app.mount("/mcp", mcp_server.streamable_http_app())
+    # streamable_http_app already defines "/mcp"; mounting at root preserves that URL.
+    app.mount("/", mcp_server.streamable_http_app())
     logging.getLogger("app.mcp").info("MCP server mounted at /mcp/")
 except ImportError:
     logging.getLogger("app.mcp").warning("oriexa_mcp not installed — MCP endpoint disabled")

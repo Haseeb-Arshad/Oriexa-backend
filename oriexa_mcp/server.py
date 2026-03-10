@@ -33,23 +33,43 @@ logger = logging.getLogger("oriexa_mcp")
 # HTTP client wrapper
 # ---------------------------------------------------------------------------
 
+def _resolve_api_base_url() -> str:
+    """Resolve API base URL from env first, then app settings, then default."""
+    env_url = os.getenv("ORIEXA_API_BASE_URL")
+    if env_url:
+        return env_url
+
+    try:
+        from app.config import settings as app_settings
+    except Exception:
+        app_settings = None
+
+    if app_settings and getattr(app_settings, "ORIEXA_API_BASE_URL", ""):
+        return app_settings.ORIEXA_API_BASE_URL
+
+    return "http://localhost:3000/api/v1"
+
 class _OriexaClient:
     """Thin async HTTP client wrapper for the Oriexa REST API."""
 
     def __init__(self) -> None:
-        self._base_url: str = os.getenv(
-            "ORIEXA_API_BASE_URL", "http://localhost:3000/api/v1"
-        )
+        self._base_url: str = _resolve_api_base_url()
         self._default_key: str = os.getenv("ORIEXA_API_KEY", "")
+        self._timeout_seconds: float = float(
+            os.getenv("ORIEXA_API_TIMEOUT_SECONDS", "90")
+        )
         self._client: Optional[httpx.AsyncClient] = None
+
+    def _build_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout_seconds,
+            headers={"Content-Type": "application/json"},
+        )
 
     async def start(self) -> None:
         """Open the underlying HTTP connection pool."""
-        self._client = httpx.AsyncClient(
-            base_url=self._base_url,
-            timeout=30.0,
-            headers={"Content-Type": "application/json"},
-        )
+        self._client = self._build_client()
         logger.info("Oriexa HTTP client started (base_url=%s)", self._base_url)
 
     async def close(self) -> None:
@@ -63,25 +83,25 @@ class _OriexaClient:
 
     async def get(self, path: str, api_key: str = "", **kwargs: Any) -> dict:
         if not self._client:
-            self._client = httpx.AsyncClient(base_url=self._base_url, timeout=30.0)
+            self._client = self._build_client()
         r = await self._client.get(path, headers=self._headers(api_key), **kwargs)
         return r.json()
 
     async def post(self, path: str, api_key: str = "", **kwargs: Any) -> dict:
         if not self._client:
-            self._client = httpx.AsyncClient(base_url=self._base_url, timeout=30.0)
+            self._client = self._build_client()
         r = await self._client.post(path, headers=self._headers(api_key), **kwargs)
         return r.json()
 
     async def patch(self, path: str, api_key: str = "", **kwargs: Any) -> dict:
         if not self._client:
-            self._client = httpx.AsyncClient(base_url=self._base_url, timeout=30.0)
+            self._client = self._build_client()
         r = await self._client.patch(path, headers=self._headers(api_key), **kwargs)
         return r.json()
 
     async def delete(self, path: str, api_key: str = "", **kwargs: Any) -> dict:
         if not self._client:
-            self._client = httpx.AsyncClient(base_url=self._base_url, timeout=30.0)
+            self._client = self._build_client()
         r = await self._client.delete(path, headers=self._headers(api_key), **kwargs)
         return r.json()
 

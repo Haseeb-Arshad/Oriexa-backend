@@ -53,6 +53,7 @@ WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).pa
 VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN")
 VERCEL_ORG_ID = os.environ.get("VERCEL_ORG_ID")
 VERCEL_PROJECT_ID = os.environ.get("VERCEL_PROJECT_ID")
+VERCEL_PUBLIC_SCOPE = os.environ.get("VERCEL_PUBLIC_SCOPE", "").strip()
 VERCEL_USE_LINKED_PROJECT = os.environ.get("VERCEL_USE_LINKED_PROJECT", "").strip().lower() in (
     "1",
     "true",
@@ -60,6 +61,32 @@ VERCEL_USE_LINKED_PROJECT = os.environ.get("VERCEL_USE_LINKED_PROJECT", "").stri
     "on",
 )
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _detect_personal_vercel_scope(task_dir: Path, env: dict[str, str]) -> str:
+    """Best-effort detect username for fallback unlinked public deploys."""
+    try:
+        proc = subprocess.run(
+            ["vercel", "whoami", f"--token={VERCEL_TOKEN}"],
+            cwd=str(task_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        output = (proc.stdout + "\n" + proc.stderr).strip()
+        output = ANSI_ESCAPE_RE.sub("", output)
+        if proc.returncode == 0:
+            for raw in output.splitlines():
+                line = raw.strip()
+                if not line or line.lower().startswith("vercel cli"):
+                    continue
+                if " " in line:
+                    continue
+                return line
+    except Exception:
+        pass
+    return ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -124,6 +151,10 @@ def run_vercel_deploy(
         log_command(task_dir, safe_cmd, proc.returncode, clean_output)
         return proc.returncode, clean_output
 
+    fallback_scope = VERCEL_PUBLIC_SCOPE
+    if force_unlinked and not fallback_scope:
+        fallback_scope = _detect_personal_vercel_scope(task_dir, env)
+
     try:
         rc, _ = _run(["vercel", "--version"], timeout=30)
         if rc != 0:
@@ -153,10 +184,14 @@ def run_vercel_deploy(
         if use_linked_project:
             commands.append(["vercel", "pull", "--yes", "--environment=production", f"--token={VERCEL_TOKEN}"])
         commands.append(["vercel", "build", "--prod", f"--token={VERCEL_TOKEN}"])
-        commands.append(["vercel", "deploy", "--prebuilt", "--prod", f"--token={VERCEL_TOKEN}"])
+        commands.append(["vercel", "deploy", "--prebuilt", "--prod", "--public", "--yes", f"--token={VERCEL_TOKEN}"])
     else:
         commands.append(["vercel", "build", f"--token={VERCEL_TOKEN}"])
-        commands.append(["vercel", "deploy", "--prebuilt", "--public", "--yes", f"--token={VERCEL_TOKEN}"])
+        deploy_cmd = ["vercel", "deploy", "--prebuilt", "--public", "--yes", f"--token={VERCEL_TOKEN}"]
+        if fallback_scope:
+            deploy_cmd.append(f"--scope={fallback_scope}")
+            log_think(f"Using fallback public scope: {fallback_scope}", AGENT_NAME)
+        commands.append(deploy_cmd)
 
     last_output = ""
     for i, cmd in enumerate(commands):
