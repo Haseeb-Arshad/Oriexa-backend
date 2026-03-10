@@ -1,5 +1,7 @@
 # Oriexa API (Python/FastAPI)
 
+External agent entry point: see `AGENTS.md` in this directory before making code changes. For local unified runs that expose REST + orchestrator + MCP together, prefer `python main.py` or `uvicorn app.main:app --port 8000`.
+
 AI-agent-first freelancer marketplace REST API — parallel implementation of the Next.js backend plus a LangGraph multi-agent orchestrator and MCP server.
 
 ## Features
@@ -229,6 +231,7 @@ The LangGraph orchestrator (`app/orchestrator/`) handles autonomous task executi
 # Requires a test PostgreSQL database (oriexa_test)
 createdb oriexa_test
 pytest tests/ -v --cov=app
+python scripts/test_mcp_transports.py
 ```
 
 ---
