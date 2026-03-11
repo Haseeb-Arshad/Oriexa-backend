@@ -54,7 +54,7 @@ from agents.base_agent import (
 # ═══════════════════════════════════════════════════════════════════════════
 
 DEFAULT_INTERVAL = 10    # seconds between orchestrator ticks
-MAX_CONCURRENT_TASKS = 3 # how many tasks to work on simultaneously
+DEFAULT_MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", "5"))
 
 ORCH = "Orchestrator"
 
@@ -238,6 +238,19 @@ class SwarmOrchestrator:
         except Exception as e:
             log_warn(f"Could not load existing claims: {e}", ORCH)
 
+    def _pipeline_stage_for_task(self, task_id: int | None) -> str:
+        """Read local pipeline stage for a task, if state exists."""
+        if not task_id:
+            return "unknown"
+        state_file = WORKSPACE_DIR / f"task_{task_id}" / ".swarm_state.json"
+        if not state_file.exists():
+            return "unknown"
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception:
+            return "unknown"
+        return str(state.get("status", "unknown"))
+
     def _wait_for_backend(self, max_retries: int = 20, wait: int = 5) -> dict:
         """Wait for backend to be reachable and authenticate. Retries with backoff."""
         for attempt in range(1, max_retries + 1):
@@ -268,6 +281,7 @@ class SwarmOrchestrator:
         print(f"  Agent: {profile.get('name', 'Unknown')} (ID: {profile.get('id', '?')})")
         print(f"  Capabilities: {self.capabilities}")
         print(f"  Poll interval: {self.interval}s")
+        print(f"  Max active claims: {self.max_active}")
         print(f"  Server: {self.base_url}")
         print(f"  Sub-agents: Scout, Coder, Tester, Deployer, Revision")
         print(f"{'='*60}\n")
@@ -439,10 +453,26 @@ class SwarmOrchestrator:
         try:
             all_tasks = self.client.get_my_tasks()
             pending_claims = self.client.get_my_claims("pending")
-            active_count = (
-                sum(1 for t in all_tasks if t.get("status") in ("claimed", "in_progress"))
-                + len(pending_claims)
-            )
+            active_count = 0
+            failed_count = 0
+            for t in all_tasks:
+                status = t.get("status")
+                if status not in ("claimed", "in_progress"):
+                    continue
+
+                task_id = t.get("id") or t.get("task_id")
+                if status == "in_progress" and task_id:
+                    if self._pipeline_stage_for_task(task_id) == "failed":
+                        failed_count += 1
+                        continue
+                active_count += 1
+
+            active_count += len(pending_claims)
+            if failed_count:
+                log_think(
+                    f"Detected {failed_count} failed in_progress task(s); excluding from scout capacity gate",
+                    ORCH,
+                )
         except Exception as e:
             log_warn(f"Failed to check capacity: {e}", ORCH)
             return False
@@ -482,6 +512,15 @@ def main():
                        help="Agent name for display")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL,
                        help=f"Poll interval in seconds (default: {DEFAULT_INTERVAL})")
+    parser.add_argument(
+        "--max-concurrent-tasks",
+        type=int,
+        default=DEFAULT_MAX_CONCURRENT_TASKS,
+        help=(
+            "Maximum concurrently active tasks to claim "
+            f"(default: {DEFAULT_MAX_CONCURRENT_TASKS})"
+        ),
+    )
     parser.add_argument("--capabilities", type=str,
                        default=",".join(DEFAULT_CAPABILITIES),
                        help="Comma-separated capabilities")
@@ -505,7 +544,7 @@ def main():
         base_url=args.base_url,
         capabilities=capabilities,
         interval=args.interval,
-        max_active=MAX_CONCURRENT_TASKS,
+        max_active=max(1, int(args.max_concurrent_tasks)),
     )
 
     if args.dry_run:

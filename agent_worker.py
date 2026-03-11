@@ -61,7 +61,7 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "") or os.environ.get("ANTHROPIC
 
 DEFAULT_CAPABILITIES = ["nextjs", "react", "vite", "javascript", "typescript", "tailwindcss", "frontend", "web-development"]
 DEFAULT_INTERVAL = 20  # seconds between polls
-MAX_CONCURRENT_TASKS = 3  # tasks to work on at once
+DEFAULT_MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", "5"))
 MAX_REMARKS_PER_TASK = 4  # max feedback remarks per agent per task (initial + follow-ups)
 
 # Pipeline sub-agent scripts (mirrors swarm.py)
@@ -703,10 +703,17 @@ class AgentBrain:
 class AutonomousWorkerAgent:
     """The main agent that runs the think-plan-act loop."""
 
-    def __init__(self, client: OriexaClient, brain: AgentBrain, interval: int):
+    def __init__(
+        self,
+        client: OriexaClient,
+        brain: AgentBrain,
+        interval: int,
+        max_concurrent_tasks: int,
+    ):
         self.client = client
         self.brain = brain
         self.interval = interval
+        self.max_concurrent_tasks = max(1, int(max_concurrent_tasks))
         self.claimed_task_ids: set[int] = set()
         self.attempted_tasks: dict[int, datetime] = {}  # task_id -> updated_at when we last skipping/remarking
         self.tasks_completed = 0
@@ -738,6 +745,7 @@ class AutonomousWorkerAgent:
             print(f"  Capabilities: {profile.get('capabilities', [])}")
             print(f"  Reputation: {profile.get('reputation', 0)}")
             print(f"  Poll interval: {self.interval}s")
+            print(f"  Max concurrent claims: {self.max_concurrent_tasks}")
             print(f"  Server: {self.client.base_url}")
             print(f"{'='*60}\n")
 
@@ -756,45 +764,72 @@ class AutonomousWorkerAgent:
                 log_err(f"Unexpected error: {exc}")
                 time.sleep(self.interval)
 
-    def _tick(self):
-        """One cycle of the agent loop."""
-        # Step 1: Check for tasks needing revision (in_progress tasks assigned to us)
-        self._check_revisions()
+    def _count_active_slots(self, all_my_tasks: list[dict]) -> tuple[int, int]:
+        """Count active task slots, excluding locally failed pipelines from claim-capacity gating."""
+        active_count = 0
+        failed_count = 0
+        for t in all_my_tasks:
+            status = t.get("status")
+            if status not in ("claimed", "in_progress"):
+                continue
 
-        # Step 2: Work on accepted claims — generate and submit deliverables
+            task_id = t.get("id") or t.get("task_id")
+            if status == "in_progress" and task_id:
+                task_dir = WORKSPACE_DIR / f"task_{task_id}"
+                if _get_pipeline_stage(task_dir) == "failed":
+                    failed_count += 1
+                    continue
+
+            active_count += 1
+        return active_count, failed_count
+
+    def _process_assigned_work(self):
+        """Run execution/revision work after intake so new tasks still get triage feedback quickly."""
+        self._check_revisions()
         self._work_on_claimed_tasks()
 
-        # Step 3: Check if we have capacity for new tasks.
+    def _tick(self):
+        """One cycle of the agent loop."""
+        # Step 1: Check if we have capacity for new claims.
         # IMPORTANT: claim status stays "accepted" forever — even after the task is
         # "delivered" or "completed". So we must count by TASK status, not claim status.
         # Only tasks in "claimed" or "in_progress" still have active work remaining.
         # "delivered" = agent submitted, waiting for poster review → slot is free.
         # "completed" / "cancelled" = fully done → slot is free.
+        can_claim_new = True
         try:
             all_my_tasks = self.client.get_my_tasks()
-            active_count = sum(
-                1 for t in all_my_tasks
-                if t.get("status") in ("claimed", "in_progress")
-            )
+            active_count, failed_count = self._count_active_slots(all_my_tasks)
+            can_claim_new = active_count < self.max_concurrent_tasks
+            if failed_count:
+                log_think(
+                    f"Detected {failed_count} failed in_progress task(s); "
+                    "excluding them from claim capacity"
+                )
         except Exception:
             active_count = 0
+            can_claim_new = True
 
-        if active_count >= MAX_CONCURRENT_TASKS:
-            log_wait(f"Working on {active_count} active task(s), at capacity — skipping new task browse")
-            return
+        if not can_claim_new:
+            log_wait(
+                f"Working on {active_count} active task(s), at capacity - "
+                "claiming paused, continuing feedback/clarification sweep"
+            )
 
-        # Step 4: Browse for new open tasks
+        # Step 2: Browse for new open tasks (always run so posters still get feedback/questions)
         log_think("Browsing for open tasks...")
         open_tasks = self.client.browse_tasks("open", limit=20) # Balanced limit
 
         if not open_tasks:
             log_wait("No open tasks available")
+            # Still continue active work when there are no new tasks to browse.
+            self._process_assigned_work()
             return
 
         log_think(f"Found {len(open_tasks)} open task(s)")
         log_think(f"Task IDs: {[t.get('id') for t in open_tasks[:5]]}...")
 
-        # Step 4: Evaluate each task and pick the best one
+        # Step 3: Evaluate each task and pick the best one (claim only if slots available)
         best_task = None
         best_evaluation = None
 
@@ -886,7 +921,9 @@ class AutonomousWorkerAgent:
             if has_answered_questions:
                 # PHASE 2: Poster answered — skip remark, proceed directly to claim
                 log_think(f"  Poster answered questions for #{task_id} — proceeding to claim (no new remark)")
-                if not is_claimed and evaluation.get("should_claim") and evaluation.get("confidence") in ("high", "medium"):
+                if (not can_claim_new) and (not is_claimed):
+                    log_think(f"  -> At claim capacity, delaying claim for #{task_id}")
+                elif not is_claimed and evaluation.get("should_claim") and evaluation.get("confidence") in ("high", "medium"):
                     if best_task is None or evaluation.get("proposed_credits", 0) > (best_evaluation or {}).get("proposed_credits", 0):
                         best_task = detail
                         best_evaluation = evaluation
@@ -949,12 +986,21 @@ class AutonomousWorkerAgent:
                 log_think(f"  -> Feedback posted, waiting for poster to answer before claiming")
                 self.attempted_tasks[task_id] = datetime.now(timezone.utc)
 
-        if not best_task:
-            log_wait("No suitable tasks found this cycle")
+        if not can_claim_new:
+            log_wait("At capacity for claims this cycle; continuing existing task execution")
+            self._process_assigned_work()
             return
 
-        # Step 5: Claim the best task
+        if not best_task:
+            log_wait("No suitable tasks found this cycle")
+            self._process_assigned_work()
+            return
+
+        # Step 4: Claim the best task
         self._claim_and_work(best_task, best_evaluation)
+
+        # Step 5: Continue execution work for existing accepted tasks
+        self._process_assigned_work()
 
     def _claim_and_work(self, task: dict, evaluation: dict):
         """Claim a task and immediately generate + submit a deliverable."""
@@ -1180,6 +1226,15 @@ def main():
                        help="Agent name (for registration)")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL,
                        help=f"Poll interval in seconds (default: {DEFAULT_INTERVAL})")
+    parser.add_argument(
+        "--max-concurrent-tasks",
+        type=int,
+        default=DEFAULT_MAX_CONCURRENT_TASKS,
+        help=(
+            "Maximum concurrently active tasks to claim "
+            f"(default: {DEFAULT_MAX_CONCURRENT_TASKS})"
+        ),
+    )
     parser.add_argument("--capabilities", type=str, default=",".join(DEFAULT_CAPABILITIES),
                        help="Comma-separated capabilities")
     args = parser.parse_args()
@@ -1217,7 +1272,12 @@ def main():
 
     # Create brain and agent
     brain = AgentBrain(capabilities)
-    agent = AutonomousWorkerAgent(client, brain, args.interval)
+    agent = AutonomousWorkerAgent(
+        client=client,
+        brain=brain,
+        interval=args.interval,
+        max_concurrent_tasks=args.max_concurrent_tasks,
+    )
 
     # Start the loop
     agent.run()
