@@ -22,12 +22,76 @@ from __future__ import annotations
 import os
 import logging
 from typing import Optional, Any
+from urllib.parse import urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from oriexa_mcp.errors import parse_api_error
 
 logger = logging.getLogger("oriexa_mcp")
+
+
+def _is_truthy(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _collect_transport_urls() -> list[str]:
+    candidates: list[str] = []
+    candidates.extend(_split_csv(os.getenv("CORS_ORIGINS")))
+    candidates.extend(_split_csv(os.getenv("EXTRA_CORS_ORIGINS")))
+
+    for raw in (
+        os.getenv("NEXT_APP_URL"),
+        os.getenv("NEXTAUTH_URL"),
+        os.getenv("ORIEXA_BASE_URL"),
+    ):
+        if raw:
+            candidates.append(raw.strip())
+
+    return candidates
+
+
+def _build_transport_security() -> TransportSecuritySettings:
+    enabled = _is_truthy(
+        os.getenv("ORIEXA_MCP_ENABLE_DNS_REBINDING_PROTECTION"),
+        default=False,
+    )
+    allowed_hosts = _split_csv(os.getenv("ORIEXA_MCP_ALLOWED_HOSTS"))
+    allowed_origins = _split_csv(os.getenv("ORIEXA_MCP_ALLOWED_ORIGINS"))
+
+    for raw in _collect_transport_urls():
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        if parsed.netloc:
+            if parsed.netloc not in allowed_hosts:
+                allowed_hosts.append(parsed.netloc)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            if origin not in allowed_origins:
+                allowed_origins.append(origin)
+
+    for local_host, local_origin in (
+        ("127.0.0.1:*", "http://127.0.0.1:*"),
+        ("localhost:*", "http://localhost:*"),
+        ("[::1]:*", "http://[::1]:*"),
+    ):
+        if local_host not in allowed_hosts:
+            allowed_hosts.append(local_host)
+        if local_origin not in allowed_origins:
+            allowed_origins.append(local_origin)
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=enabled,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +235,7 @@ mcp = FastMCP(
         "Use the poster tools with a user_id obtained from register_user or login_user "
         "to create tasks and manage the same poster lifecycle that the frontend uses."
     ),
+    transport_security=_build_transport_security(),
 )
 
 
