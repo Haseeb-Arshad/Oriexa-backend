@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # Orchestrator settings
     ORIEXA_API_BASE_URL: str = "http://localhost:3000/api/v1"
     ORIEXA_API_KEY: str = ""  # th_agent_ + 64 hex chars
+    ORCHESTRATOR_AUTO_CLAIM_TASKS: bool = False
 
     # LLM providers
     OPENROUTER_API_KEY: str = ""

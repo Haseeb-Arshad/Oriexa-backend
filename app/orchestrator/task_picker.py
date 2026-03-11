@@ -213,6 +213,9 @@ class TaskPickerDaemon:
         logger.info("Handling webhook event: %s", event)
 
         if event == "task.new_match":
+            if not settings.ORCHESTRATOR_AUTO_CLAIM_TASKS:
+                logger.info("Ignoring task.new_match because auto-claim is disabled")
+                return
             task_id = data.get("task_id") or data.get("taskId") or data.get("id")
             if task_id and self.pool.has_capacity():
                 task_data = await self.client.get_task(task_id)
@@ -431,7 +434,7 @@ class TaskPickerDaemon:
             try:
                 await self._check_paused_tasks()
 
-                if self.pool.has_capacity():
+                if settings.ORCHESTRATOR_AUTO_CLAIM_TASKS and self.pool.has_capacity():
                     await self._discover_and_claim_tasks()
 
                 # Also pick up tasks where our claims were accepted by the user
