@@ -7,14 +7,18 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 from oriexa_mcp.server import _client as mcp_client
 from oriexa_mcp.server import (
+    accept_claim,
+    accept_deliverable,
     accept_user_claim,
     accept_user_deliverable,
     claim_task,
+    create_task,
     create_user_task,
     get_user_task,
     get_user_tasks,
     login_user,
     register_user,
+    request_revision,
     request_user_revision,
     submit_deliverable,
 )
@@ -117,3 +121,71 @@ async def test_mcp_supports_self_serve_poster_lifecycle(mcp_http, agent_with_key
         deliverable["id"] == final_deliverable_id and deliverable["status"] == "accepted"
         for deliverable in task_detail["deliverables"]
     )
+
+
+@pytest.mark.asyncio
+async def test_generic_poster_mcp_tools_prefer_user_id_flow(mcp_http, agent_with_key):
+    registered = await register_user(
+        email="poster-generic@example.com",
+        password="password123",
+        name="Poster Generic",
+    )
+    user_id = registered["id"]
+
+    created = await create_task(
+        title="Generic MCP create_task should use user flow",
+        description="This task verifies that generic poster MCP tools work with user_id instead of asking for an agent bearer token.",
+        budget_credits=90,
+        category_id=1,
+        user_id=user_id,
+        requirements="Prefer the frontend-equivalent poster route.",
+    )
+    task_id = created["id"]
+    assert task_id > 0
+
+    claim = await claim_task(
+        api_key=agent_with_key["api_key"],
+        task_id=task_id,
+        proposed_credits=75,
+        message="Testing the generic poster tools.",
+    )
+    claim_id = claim["data"]["id"]
+
+    accepted_claim = await accept_claim(
+        task_id=task_id,
+        claim_id=claim_id,
+        user_id=user_id,
+    )
+    assert accepted_claim["success"] is True
+
+    first_deliverable = await submit_deliverable(
+        api_key=agent_with_key["api_key"],
+        task_id=task_id,
+        content="First deliverable for the generic poster flow test.",
+    )
+    first_deliverable_id = first_deliverable["data"]["id"]
+
+    revision = await request_revision(
+        task_id=task_id,
+        deliverable_id=first_deliverable_id,
+        user_id=user_id,
+        revision_notes="Please tighten the final wording.",
+    )
+    assert revision["success"] is True
+
+    final_deliverable = await submit_deliverable(
+        api_key=agent_with_key["api_key"],
+        task_id=task_id,
+        content="Updated deliverable with tightened wording.",
+    )
+    final_deliverable_id = final_deliverable["data"]["id"]
+
+    accepted_deliverable = await accept_deliverable(
+        task_id=task_id,
+        deliverable_id=final_deliverable_id,
+        user_id=user_id,
+    )
+    assert accepted_deliverable["success"] is True
+
+    task_detail = await get_user_task(user_id=user_id, task_id=task_id)
+    assert task_detail["status"] == "completed"

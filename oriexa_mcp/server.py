@@ -267,6 +267,18 @@ def _user_task_payload(
     return payload
 
 
+def _has_api_key(api_key: str = "") -> bool:
+    return bool(api_key or _client._default_key)
+
+
+def _require_poster_identity(user_id: Optional[int], api_key: str = "") -> None:
+    if user_id is None and not _has_api_key(api_key):
+        raise ValueError(
+            "Poster actions require either user_id from register_user/login_user "
+            "or an explicit th_agent_* api_key."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Task tools
 # ---------------------------------------------------------------------------
@@ -399,23 +411,29 @@ async def list_task_deliverables(api_key: str, task_id: int) -> dict:
 
 @mcp.tool()
 async def create_task(
-    api_key: str,
     title: str,
     description: str,
     budget_credits: int,
+    user_id: Optional[int] = None,
+    api_key: str = "",
     category_id: Optional[int] = None,
     requirements: Optional[str] = None,
     deadline: Optional[str] = None,
     max_revisions: int = 2,
 ) -> dict:
     """
-    Create a new task on the marketplace (agent acting as poster).
+    Create a new task on the marketplace.
+
+    Prefer poster self-serve mode by passing user_id from register_user or
+    login_user. Only use api_key when an operator agent is intentionally
+    acting as the poster through the worker-authenticated route.
 
     Args:
-        api_key: Your agent API key (poster side).
         title: Task title (5-200 chars).
         description: Detailed description of work required (20-5000 chars).
         budget_credits: Maximum credits you will pay on completion (min 10).
+        user_id: Poster user ID from register_user or login_user. Preferred.
+        api_key: Optional th_agent_* API key for operator-agent poster mode only.
         category_id: Category ID (1-7, see api_categories resource).
         requirements: Additional requirements or acceptance criteria (up to 5000 chars).
         deadline: ISO 8601 deadline string (e.g. "2026-04-01T00:00:00Z").
@@ -437,6 +455,14 @@ async def create_task(
     if deadline:
         payload["deadline"] = deadline
 
+    if user_id is not None:
+        return await _client.post(
+            "/user/tasks",
+            json=payload,
+            extra_headers=_user_headers(user_id),
+        )
+
+    _require_poster_identity(user_id, api_key)
     return await _client.post("/tasks", api_key=api_key, json=payload)
 
 
@@ -528,27 +554,40 @@ async def submit_deliverable(
 
 @mcp.tool()
 async def accept_claim(
-    api_key: str,
     task_id: int,
     claim_id: int,
+    user_id: Optional[int] = None,
+    api_key: str = "",
 ) -> dict:
     """
     Accept a pending claim on your task (poster action).
 
-    You must be the task poster to call this. Accepting a claim:
+    Prefer poster self-serve mode by passing user_id. Use api_key only when
+    an operator agent is intentionally acting as the poster.
+
+    Accepting a claim:
     - Changes task status from open to claimed
     - Sets accepted claim status to accepted
     - Auto-rejects all other pending claims
     - Credits flow ONLY when deliverable is later accepted
 
     Args:
-        api_key: Your agent API key (must be the task poster's operator agent).
         task_id: The integer task ID (must be open).
         claim_id: The claim ID to accept (must be pending on this task).
+        user_id: Poster user ID from register_user or login_user. Preferred.
+        api_key: Optional th_agent_* API key for operator-agent poster mode only.
 
     Returns:
         Envelope with task_id, claim_id, agent_id, status=accepted.
     """
+    if user_id is not None:
+        return await _client.post(
+            f"/user/tasks/{task_id}/accept-claim",
+            json={"claim_id": claim_id},
+            extra_headers=_user_headers(user_id),
+        )
+
+    _require_poster_identity(user_id, api_key)
     return await _client.post(
         f"/tasks/{task_id}/claims/accept",
         api_key=api_key,
@@ -558,14 +597,18 @@ async def accept_claim(
 
 @mcp.tool()
 async def accept_deliverable(
-    api_key: str,
     task_id: int,
     deliverable_id: int,
+    user_id: Optional[int] = None,
+    api_key: str = "",
 ) -> dict:
     """
     Accept a submitted deliverable, completing the task and paying credits (poster action).
 
-    You must be the task poster to call this. On acceptance:
+    Prefer poster self-serve mode by passing user_id. Use api_key only when
+    an operator agent is intentionally acting as the poster.
+
+    On acceptance:
     - Task status changes to completed
     - Agent operator earns credits: budget_credits - floor(budget * 10%)
     - Ledger entry created for operator
@@ -573,13 +616,22 @@ async def accept_deliverable(
     - webhook deliverable.accepted fires
 
     Args:
-        api_key: Your agent API key (must be the task poster's operator agent).
         task_id: The task ID (must be in delivered status).
         deliverable_id: The specific deliverable ID to accept.
+        user_id: Poster user ID from register_user or login_user. Preferred.
+        api_key: Optional th_agent_* API key for operator-agent poster mode only.
 
     Returns:
         Envelope with task_id, deliverable_id, status=completed, credits_paid, platform_fee.
     """
+    if user_id is not None:
+        return await _client.post(
+            f"/user/tasks/{task_id}/accept-deliverable",
+            json={"deliverable_id": deliverable_id},
+            extra_headers=_user_headers(user_id),
+        )
+
+    _require_poster_identity(user_id, api_key)
     return await _client.post(
         f"/tasks/{task_id}/deliverables/accept",
         api_key=api_key,
@@ -589,26 +641,39 @@ async def accept_deliverable(
 
 @mcp.tool()
 async def request_revision(
-    api_key: str,
     task_id: int,
     deliverable_id: int,
+    user_id: Optional[int] = None,
+    api_key: str = "",
     revision_notes: str = "",
 ) -> dict:
     """
     Request a revision on a submitted deliverable (poster action).
 
+    Prefer poster self-serve mode by passing user_id. Use api_key only when
+    an operator agent is intentionally acting as the poster.
+
     Task goes back to in_progress; agent must resubmit. Each task has a
     max_revisions limit (default 2 = 3 total submissions allowed).
 
     Args:
-        api_key: Your agent API key (must be the task poster's operator agent).
         task_id: The task ID (must be in delivered status).
         deliverable_id: The deliverable ID to request revision on.
+        user_id: Poster user ID from register_user or login_user. Preferred.
+        api_key: Optional th_agent_* API key for operator-agent poster mode only.
         revision_notes: Feedback explaining what needs to change.
 
     Returns:
         Envelope with task_id, deliverable_id, status=revision_requested.
     """
+    if user_id is not None:
+        return await _client.post(
+            f"/user/tasks/{task_id}/request-revision",
+            json={"deliverable_id": deliverable_id, "notes": revision_notes},
+            extra_headers=_user_headers(user_id),
+        )
+
+    _require_poster_identity(user_id, api_key)
     return await _client.post(
         f"/tasks/{task_id}/deliverables/revision",
         api_key=api_key,
