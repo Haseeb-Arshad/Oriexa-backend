@@ -48,6 +48,11 @@ from agents.base_agent import (
     log_wait,
     log_warn,
 )
+from app.services.agent_workspaces import (
+    ensure_local_workspace,
+    load_swarm_state,
+    sweep_workspaces,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -242,14 +247,32 @@ class SwarmOrchestrator:
         """Read local pipeline stage for a task, if state exists."""
         if not task_id:
             return "unknown"
-        state_file = WORKSPACE_DIR / f"task_{task_id}" / ".swarm_state.json"
-        if not state_file.exists():
-            return "unknown"
-        try:
-            state = json.loads(state_file.read_text(encoding="utf-8"))
-        except Exception:
+        task_dir = WORKSPACE_DIR / f"task_{task_id}"
+        state = load_swarm_state(task_id, workspace_dir=task_dir)
+        if not state:
             return "unknown"
         return str(state.get("status", "unknown"))
+
+    def _sweep_workspaces(self) -> None:
+        """Delete terminal or idle task workspaces while preserving resume metadata."""
+        try:
+            my_tasks = self.client.get_my_tasks()
+        except Exception as e:
+            log_warn(f"Failed to fetch tasks for workspace sweep: {e}", ORCH)
+            return
+
+        status_map: dict[int, str] = {}
+        for task in my_tasks:
+            task_id = task.get("id") or task.get("task_id")
+            if not task_id:
+                continue
+            status_map[task_id] = str(task.get("status") or "")
+
+        for action in sweep_workspaces(task_statuses=status_map, workspace_root=WORKSPACE_DIR):
+            log_think(
+                f"Cleaned workspace for task #{action['task_id']} ({action['reason']})",
+                ORCH,
+            )
 
     def _wait_for_backend(self, max_retries: int = 20, wait: int = 5) -> dict:
         """Wait for backend to be reachable and authenticate. Retries with backoff."""
@@ -309,6 +332,7 @@ class SwarmOrchestrator:
     def _tick(self):
         """One orchestrator dispatch cycle."""
         self.cycle_count += 1
+        self._sweep_workspaces()
 
         # ── Priority 1: Check for revision requests ──────────────────
         dispatched = self._check_revisions()
@@ -342,6 +366,13 @@ class SwarmOrchestrator:
         for task_summary in revision_tasks:
             task_id = task_summary.get("id") or task_summary.get("task_id")
             log_think(f"Task #{task_id} is in_progress — checking for revision requests", ORCH)
+            _, _, rehydrated = ensure_local_workspace(
+                task_id,
+                task_status=task_summary.get("status"),
+                workspace_root=WORKSPACE_DIR,
+            )
+            if rehydrated:
+                log_think(f"Rehydrated task #{task_id} workspace from GitHub", ORCH)
 
             result = run_sub_agent(
                 REVISION_SCRIPT,
@@ -378,18 +409,16 @@ class SwarmOrchestrator:
                 continue
 
             # Read local state to figure out pipeline stage
-            task_dir = WORKSPACE_DIR / f"task_{task_id}"
-            task_dir.mkdir(parents=True, exist_ok=True)
-            state_file = task_dir / ".swarm_state.json"
-            
-            pipeline_stage = "coding"
-            if state_file.exists():
-                try:
-                    with open(state_file, "r") as f:
-                        state = json.load(f)
-                        pipeline_stage = state.get("status", "coding")
-                except Exception:
-                    pass
+            task_dir, _, rehydrated = ensure_local_workspace(
+                task_id,
+                task_status=task_status,
+                workspace_root=WORKSPACE_DIR,
+            )
+            if rehydrated:
+                log_think(f"Rehydrated task #{task_id} workspace from GitHub", ORCH)
+
+            state = load_swarm_state(task_id, workspace_dir=task_dir)
+            pipeline_stage = str(state.get("status", "coding")) if state else "coding"
 
             # Determine which agent to dispatch
             if pipeline_stage == "coding":

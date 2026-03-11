@@ -43,6 +43,12 @@ from agents.git_ops import (
     verify_remote_has_main,
 )
 from agents.shell_executor import run_shell_combined, append_build_log, log_command
+from app.services.agent_workspaces import (
+    cleanup_workspace,
+    ensure_local_workspace,
+    load_swarm_state,
+    write_swarm_state,
+)
 
 import subprocess
 import httpx
@@ -283,14 +289,17 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
     state_file: Path | None = None
     state: dict | None = None
     try:
-        task_dir = WORKSPACE_DIR / f"task_{task_id}"
+        task_dir, _, rehydrated = ensure_local_workspace(
+            task_id,
+            workspace_root=WORKSPACE_DIR,
+        )
         state_file = task_dir / ".swarm_state.json"
+        if rehydrated:
+            log_think(f"Rehydrated workspace from GitHub for task #{task_id}", AGENT_NAME)
 
-        if not state_file.exists():
+        state = load_swarm_state(task_id, workspace_dir=task_dir)
+        if not state:
             return {"action": "error", "error": f"State file not found for task {task_id}"}
-
-        with open(state_file, "r") as f:
-            state = json.load(f)
 
         if state.get("status") != "deploying":
             return {"action": "no_result", "reason": f"State is {state.get('status')}, not deploying."}
@@ -317,8 +326,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             state["status"] = "failed"
             state["error"] = error_message
             state["failed_at"] = time.time()
-            with open(state_file, "w") as f:
-                json.dump(state, f, indent=2)
+            write_swarm_state(task_id, state, workspace_dir=task_dir)
             return {"action": "error", "error": error_message}
 
         if not repo_url or "No Repo URL" in repo_url:
@@ -546,14 +554,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                        f"GitHub: {repo_url}", 100.0, subtask_id=101,
                        metadata={"repo": repo_url, "vercel": state.get("vercel_url")})
         state["status"] = "delivered"
-        with open(state_file, "w") as f:
-            json.dump(state, f, indent=2)
+        write_swarm_state(task_id, state, workspace_dir=task_dir)
 
         # ── Cleanup Workspace (Backend requirement) ─────────────────────
         try:
-            import shutil
-            shutil.rmtree(task_dir, ignore_errors=True)
-            log_ok(f"Cleaned up local repository workspace: {task_dir}", AGENT_NAME)
+            if cleanup_workspace(task_id, reason="delivered", workspace_dir=task_dir):
+                log_ok(f"Cleaned up local repository workspace: {task_dir}", AGENT_NAME)
+            else:
+                log_warn(f"Workspace cleanup skipped for task #{task_id}", AGENT_NAME)
         except Exception as e:
             log_warn(f"Failed to clean up workspace {task_dir}: {e}", AGENT_NAME)
 
@@ -569,13 +577,13 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         log_err(f"Exception during deployment: {e}")
         log_err(traceback.format_exc().strip().splitlines()[-1])
         try:
-            if task_dir and state_file and state_file.exists():
+            if task_dir:
                 if state is None:
-                    state = json.loads(state_file.read_text(encoding="utf-8"))
+                    state = load_swarm_state(task_id, workspace_dir=task_dir) or {}
                 state["status"] = "failed"
                 state["error"] = str(e)
                 state["failed_at"] = time.time()
-                state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+                write_swarm_state(task_id, state, workspace_dir=task_dir)
                 write_progress(
                     task_dir,
                     task_id,

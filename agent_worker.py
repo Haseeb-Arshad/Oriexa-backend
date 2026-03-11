@@ -42,6 +42,11 @@ from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
+from app.services.agent_workspaces import (
+    ensure_local_workspace,
+    load_swarm_state,
+    sweep_workspaces,
+)
 
 # Force UTF-8 on Windows
 # if sys.platform == "win32":
@@ -185,11 +190,13 @@ def _run_pipeline_agent(script: Path, api_key: str, base_url: str, task_id: int,
 
 def _get_pipeline_stage(task_dir: Path) -> str:
     """Read the .swarm_state.json to determine the current pipeline stage."""
-    state_file = task_dir / ".swarm_state.json"
-    if state_file.exists():
+    task_name = task_dir.name
+    if task_name.startswith("task_"):
         try:
-            state = json.loads(state_file.read_text(encoding="utf-8"))
-            return state.get("status", "coding")
+            task_id = int(task_name.split("_", 1)[1])
+            state = load_swarm_state(task_id, workspace_dir=task_dir)
+            if state:
+                return str(state.get("status", "coding"))
         except Exception:
             pass
     return "coding"
@@ -783,6 +790,20 @@ class AutonomousWorkerAgent:
             active_count += 1
         return active_count, failed_count
 
+    def _sweep_workspaces(self, all_my_tasks: list[dict]) -> None:
+        """Delete terminal or idle workspaces while preserving rehydrate metadata."""
+        status_map: dict[int, str] = {}
+        for task in all_my_tasks:
+            task_id = task.get("id") or task.get("task_id")
+            if not task_id:
+                continue
+            status_map[task_id] = str(task.get("status") or "")
+
+        for action in sweep_workspaces(task_statuses=status_map, workspace_root=WORKSPACE_DIR):
+            log_think(
+                f"Cleaned workspace for task #{action['task_id']} ({action['reason']})"
+            )
+
     def _process_assigned_work(self):
         """Run execution/revision work after intake so new tasks still get triage feedback quickly."""
         self._check_revisions()
@@ -799,6 +820,7 @@ class AutonomousWorkerAgent:
         can_claim_new = True
         try:
             all_my_tasks = self.client.get_my_tasks()
+            self._sweep_workspaces(all_my_tasks)
             active_count, failed_count = self._count_active_slots(all_my_tasks)
             can_claim_new = active_count < self.max_concurrent_tasks
             if failed_count:
@@ -1083,8 +1105,13 @@ class AutonomousWorkerAgent:
                 log_act(f"Running CI/CD pipeline for task #{task_id}: \"{task.get('title', '')[:40]}\"")
 
                 # Use the real coder → deploy pipeline (same as swarm.py orchestrator)
-                task_dir = WORKSPACE_DIR / f"task_{task_id}"
-                task_dir.mkdir(parents=True, exist_ok=True)
+                task_dir, _, rehydrated = ensure_local_workspace(
+                    task_id,
+                    task_status=status,
+                    workspace_root=WORKSPACE_DIR,
+                )
+                if rehydrated:
+                    log_think(f"  Task #{task_id}: rehydrated workspace from GitHub")
 
                 pipeline_stage = _get_pipeline_stage(task_dir)
                 log_think(f"  Task #{task_id}: pipeline stage = '{pipeline_stage}'")
@@ -1193,8 +1220,13 @@ class AutonomousWorkerAgent:
                     log_act(f"Revision requested for task #{task_id}: \"{feedback[:60]}\"")
 
                     # Dispatch Revision Agent sub-process (mirrors swarm.py)
-                    task_dir = WORKSPACE_DIR / f"task_{task_id}"
-                    task_dir.mkdir(parents=True, exist_ok=True)
+                    task_dir, _, rehydrated = ensure_local_workspace(
+                        task_id,
+                        task_status=status,
+                        workspace_root=WORKSPACE_DIR,
+                    )
+                    if rehydrated:
+                        log_think(f"Task #{task_id} revision workspace rehydrated from GitHub")
                     if not _acquire_lock(task_dir, "Revision"):
                         log_warn(f"Task #{task_id} revision locked — skipping")
                         continue

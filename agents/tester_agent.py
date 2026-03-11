@@ -41,6 +41,11 @@ from agents.shell_executor import (
     append_build_log,
     log_command,
 )
+from app.services.agent_workspaces import (
+    ensure_local_workspace,
+    load_swarm_state,
+    write_swarm_state,
+)
 
 AGENT_NAME = "Tester"
 WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
@@ -48,14 +53,17 @@ WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).pa
 
 def process_task(client: OriexaClient, task_id: int) -> dict:
     try:
-        task_dir = WORKSPACE_DIR / f"task_{task_id}"
+        task_dir, _, rehydrated = ensure_local_workspace(
+            task_id,
+            workspace_root=WORKSPACE_DIR,
+        )
         state_file = task_dir / ".swarm_state.json"
+        if rehydrated:
+            log_think(f"Rehydrated workspace from GitHub for task #{task_id}", AGENT_NAME)
 
-        if not state_file.exists():
+        state = load_swarm_state(task_id, workspace_dir=task_dir)
+        if not state:
             return {"action": "error", "error": f"State file not found for task {task_id}"}
-
-        with open(state_file, "r") as f:
-            state = json.load(f)
 
         if state.get("status") != "testing":
             return {"action": "no_result", "reason": f"State is {state.get('status')}, not testing."}
@@ -161,8 +169,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                             + (build_out[-2000:] if len(build_out) > 2000 else build_out)
                         )
                         state["test_iteration"] = test_iteration + 1
-                        with open(state_file, "w") as f:
-                            import json as _json2; _json2.dump(state, f, indent=2)
+                        write_swarm_state(task_id, state, workspace_dir=task_dir)
                         h = commit_step(task_dir, f"build: failed (attempt {test_iteration + 1}) - deployment blocked")
                         if h:
                             append_commit_log(task_dir, h, "build: failed, deployment blocked")
@@ -176,8 +183,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                             f"{build_out[-2000:] if len(build_out) > 2000 else build_out}"
                         )
                         state["test_iteration"] = test_iteration + 1
-                        with open(state_file, "w") as f:
-                            import json as _json2; _json2.dump(state, f, indent=2)
+                        write_swarm_state(task_id, state, workspace_dir=task_dir)
                         h = commit_step(task_dir, f"build: FAILED (attempt {test_iteration + 1}) — returning to coder")
                         if h:
                             append_commit_log(task_dir, h, "build: failed")
@@ -196,8 +202,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                            "Build check passed", 95.0, subtask_id=100)
             state["status"] = "deploying"
             state["test_errors"] = ""
-            with open(state_file, "w") as f:
-                json.dump(state, f, indent=2)
+            write_swarm_state(task_id, state, workspace_dir=task_dir)
             return {"action": "tested", "task_id": task_id, "passed": True}
 
         write_progress(task_dir, task_id, "testing", "Running tests",
@@ -286,8 +291,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     push_to_remote(task_dir)
                     log_ok(f"Failing test results committed [{h}] and pushed", AGENT_NAME)
 
-        with open(state_file, "w") as f:
-            json.dump(state, f, indent=2)
+        write_swarm_state(task_id, state, workspace_dir=task_dir)
 
         return {"action": "tested", "task_id": task_id, "passed": (rc == 0)}
 

@@ -15,6 +15,13 @@ from pathlib import Path
 
 import httpx
 
+from app.services.agent_workspaces import (
+    ensure_authenticated_remote,
+    expected_repo_url,
+    remote_repo_exists,
+    update_workspace_metadata,
+)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════
@@ -136,59 +143,79 @@ def create_github_repo(task_id: int, task_dir: Path) -> str | None:
     Handles 'name already exists' by linking to the existing repo.
     """
     gh_token = os.environ.get("GITHUB_TOKEN", os.environ.get("GH_TOKEN", ""))
-    repo_name = f"oriexa-task-{task_id}"
-    repo_url = f"https://github.com/{GITHUB_USERNAME}/{repo_name}"
+    repo_url = expected_repo_url(task_id)
+    repo_name = repo_url.rstrip("/").split("/")[-1]
     # Authenticated URL for seamless push (no credential prompts)
     auth_url = f"https://x-access-token:{gh_token}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
 
     # Check if remote already exists
     rc, out = _run(["git", "remote"], task_dir)
     if "origin" in out:
-        # Already linked — just push
-        _run(["git", "push", "-u", "origin", "main", "--force"], task_dir)
-        return repo_url
+        ensure_authenticated_remote(task_dir, repo_url)
+        if remote_repo_exists(repo_url) and not has_meaningful_implementation(task_dir):
+            update_workspace_metadata(task_id, workspace_dir=task_dir, repo_url=repo_url)
+            return repo_url
+
+        rc, _ = _run(["git", "push", "-u", "origin", "main"], task_dir)
+        if rc == 0:
+            update_workspace_metadata(task_id, workspace_dir=task_dir, repo_url=repo_url)
+            return repo_url
+        return None
 
     if not gh_token:
         # No token — can't create repo via API, try linking directly
         _run(["git", "remote", "add", "origin", f"{repo_url}.git"], task_dir)
-        rc, _ = _run(["git", "push", "-u", "origin", "main", "--force"], task_dir)
-        return repo_url if rc == 0 else None
+        if remote_repo_exists(repo_url) and not has_meaningful_implementation(task_dir):
+            update_workspace_metadata(task_id, workspace_dir=task_dir, repo_url=repo_url)
+            return repo_url
+
+        rc, _ = _run(["git", "push", "-u", "origin", "main"], task_dir)
+        if rc == 0:
+            update_workspace_metadata(task_id, workspace_dir=task_dir, repo_url=repo_url)
+            return repo_url
+        return None
+
+    repo_exists = remote_repo_exists(repo_url)
 
     # Create repo via GitHub REST API
-    try:
-        resp = httpx.post(
-            "https://api.github.com/user/repos",
-            headers={
-                "Authorization": f"Bearer {gh_token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-            json={
-                "name": repo_name,
-                "description": f"Oriexa delivery for task #{task_id}",
-                "private": False,
-                "auto_init": False,
-            },
-            timeout=30.0,
-        )
+    if not repo_exists:
+        try:
+            resp = httpx.post(
+                "https://api.github.com/user/repos",
+                headers={
+                    "Authorization": f"Bearer {gh_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json={
+                    "name": repo_name,
+                    "description": f"Oriexa delivery for task #{task_id}",
+                    "private": False,
+                    "auto_init": False,
+                },
+                timeout=30.0,
+            )
 
-        if resp.status_code == 201:
-            # Repo created successfully
-            pass
-        elif resp.status_code == 422 and "name already exists" in resp.text.lower():
-            # Repo already exists — that's fine
-            pass
-        else:
-            # Unexpected error
+            if resp.status_code == 201:
+                repo_exists = True
+            elif resp.status_code == 422 and "name already exists" in resp.text.lower():
+                repo_exists = True
+            else:
+                return None
+        except Exception:
             return None
-    except Exception:
-        return None
 
     # Add authenticated remote and push
     _run(["git", "remote", "add", "origin", auth_url], task_dir)
-    rc, _ = _run(["git", "push", "-u", "origin", "main", "--force"], task_dir, timeout=30)
+    if repo_exists and remote_repo_exists(repo_url) and not has_meaningful_implementation(task_dir):
+        update_workspace_metadata(task_id, workspace_dir=task_dir, repo_url=repo_url)
+        return repo_url
 
-    return repo_url if rc == 0 else None
+    rc, _ = _run(["git", "push", "-u", "origin", "main"], task_dir, timeout=30)
+    if rc == 0:
+        update_workspace_metadata(task_id, workspace_dir=task_dir, repo_url=repo_url)
+        return repo_url
+    return None
 
 
 def commit_step(
@@ -239,6 +266,7 @@ def commit_step(
 
 def push_to_remote(task_dir: Path, force: bool = False) -> bool:
     """Push to origin/main. Returns True on success."""
+    ensure_authenticated_remote(task_dir)
     cmd = ["git", "push", "-u", "origin", "main"]
     if force:
         cmd.append("--force")

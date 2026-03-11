@@ -6,11 +6,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import get_db
 from app.db.models import User, Task, TaskClaim, Category, Deliverable, Agent, SubmissionAttempt, CreditTransaction, TaskMessage
 from app.auth.user_auth import get_current_user_id
+from app.services.agent_workspaces import cleanup_workspace, sync_task_status
 from app.services.webhooks import dispatch_new_task_match, dispatch_webhook_event
 from app.services.reputation import compute_reputation_tier
 from app.api.events import event_broadcaster
 
 router = APIRouter()
+
+
+def _sync_workspace_status(task_id: int, status: str) -> None:
+    try:
+        sync_task_status(task_id, status)
+    except Exception:
+        pass
+
+
+def _cleanup_task_workspace(task_id: int, reason: str) -> None:
+    try:
+        cleanup_workspace(task_id, reason=reason)
+    except Exception:
+        pass
 
 @router.get("/profile")
 async def get_profile(
@@ -382,6 +397,7 @@ async def user_accept_claim(
     task.claimed_by_agent_id = claim.agent_id
     task.updated_at = datetime.now(timezone.utc)
     await session.commit()
+    _sync_workspace_status(task_id, "claimed")
 
     # Dispatch webhooks
     dispatch_webhook_event(claim.agent_id, "claim.accepted", {
@@ -451,6 +467,8 @@ async def user_accept_deliverable(
             agent.updated_at = datetime.now(timezone.utc)
 
     await session.commit()
+    _sync_workspace_status(task_id, "completed")
+    _cleanup_task_workspace(task_id, "completed")
 
     # Dispatch webhook
     if task.claimed_by_agent_id:
@@ -511,6 +529,7 @@ async def user_request_revision(
     task.updated_at = datetime.now(timezone.utc)
 
     await session.commit()
+    _sync_workspace_status(task_id, "in_progress")
 
     # Dispatch webhook
     if task.claimed_by_agent_id:
@@ -571,17 +590,8 @@ async def cancel_task(
     task.status = "cancelled"
     task.updated_at = datetime.now(timezone.utc)
     await session.commit()
-
-    # Clean up agent lock file if it exists
-    import os
-    from pathlib import Path
-    workspace_dir = Path(os.environ.get("AGENT_WORKSPACE_DIR", "/opt/oriexa/agent_works"))
-    lock_file = workspace_dir / f"task_{task_id}" / ".agent_lock"
-    if lock_file.exists():
-        try:
-            lock_file.unlink()
-        except Exception:
-            pass
+    _sync_workspace_status(task_id, "cancelled")
+    _cleanup_task_workspace(task_id, "cancelled")
 
     # Broadcast real-time event
     event_broadcaster.broadcast(user_id, "task_updated", {

@@ -50,6 +50,11 @@ from agents.shell_executor import (
     append_build_log,
     log_command,
 )
+from app.services.agent_workspaces import (
+    ensure_local_workspace,
+    load_swarm_state,
+    write_swarm_state,
+)
 
 AGENT_NAME = "Coder"
 WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
@@ -691,12 +696,17 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             return {"action": "error", "error": f"Task {task_id} not found."}
 
         # Load / initialize state
-        task_dir = WORKSPACE_DIR / f"task_{task_id}"
-        task_dir.mkdir(parents=True, exist_ok=True)
+        task_dir, _, rehydrated = ensure_local_workspace(
+            task_id,
+            task_status=task.get("status"),
+            workspace_root=WORKSPACE_DIR,
+        )
         state_file = task_dir / ".swarm_state.json"
+        if rehydrated:
+            log_think(f"Rehydrated workspace from GitHub for task #{task_id}", AGENT_NAME)
         log_think(f"Loading state from: {state_file}", AGENT_NAME)
 
-        state = {
+        state = load_swarm_state(task_id, workspace_dir=task_dir, default={
             "status": "coding",
             "current_step": 0,
             "total_steps": 0,
@@ -705,10 +715,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             "iterations": 0,
             "files": [],
             "test_command": "echo 'No tests defined'",
-        }
-        if state_file.exists():
-            with open(state_file, "r") as f:
-                state = json.load(f)
+        })
 
         if state.get("status") != "coding":
             return {"action": "no_result", "reason": f"State is {state.get('status')}, not coding."}
@@ -1116,8 +1123,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
 
 def _save_state(state_file: Path, state: dict):
     """Save state to disk."""
-    with open(state_file, "w") as f:
-        json.dump(state, f, indent=2)
+    try:
+        task_id = int(state_file.parent.name.split("_", 1)[1])
+    except Exception:
+        with open(state_file, "w") as f:
+            json.dump(state, f, indent=2)
+        return
+
+    write_swarm_state(task_id, state, workspace_dir=state_file.parent)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

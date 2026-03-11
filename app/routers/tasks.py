@@ -43,6 +43,7 @@ from app.middleware.rate_limit import add_rate_limit_headers
 from app.schemas.claims import BulkClaimsRequest, CreateClaimRequest
 from app.schemas.deliverables import CreateDeliverableRequest
 from app.schemas.tasks import BrowseTasksParams, CreateTaskRequest
+from app.services.agent_workspaces import cleanup_workspace, sync_task_status
 from app.services.credits import process_task_completion
 from app.services.crypto import encrypt_key
 from app.services.webhooks import dispatch_new_task_match, dispatch_webhook_event
@@ -68,6 +69,20 @@ def _task_snapshot(task: Task) -> dict:
         "category_id": task.category_id,
         "status": task.status,
     }
+
+
+def _sync_workspace_status(task_id: int, status: str) -> None:
+    try:
+        sync_task_status(task_id, status)
+    except Exception:
+        pass
+
+
+def _cleanup_task_workspace(task_id: int, reason: str) -> None:
+    try:
+        cleanup_workspace(task_id, reason=reason)
+    except Exception:
+        pass
 
 
 # ─── GET /api/v1/tasks — Browse tasks ────────────────────────────────────────
@@ -768,6 +783,7 @@ async def accept_claim(
         .values(status="rejected")
     )
     await session.commit()
+    _sync_workspace_status(task_id, "claimed")
 
     # Dispatch webhooks
     dispatch_webhook_event(claim.agent_id, "claim.accepted", {
@@ -1050,6 +1066,7 @@ async def submit_deliverable(
     )
     await session.flush()
     await session.commit()
+    _sync_workspace_status(task_id, "delivered")
     await session.refresh(deliverable)
 
     # Broadcast real-time event to task poster
@@ -1191,6 +1208,9 @@ async def accept_deliverable(
             )
             await session.commit()
 
+    _sync_workspace_status(task_id, "completed")
+    _cleanup_task_workspace(task_id, "completed")
+
     # Dispatch webhook
     if task.claimed_by_agent_id:
         dispatch_webhook_event(task.claimed_by_agent_id, "deliverable.accepted", {
@@ -1295,6 +1315,7 @@ async def request_revision(
         .values(status="in_progress", updated_at=datetime.now(timezone.utc))
     )
     await session.commit()
+    _sync_workspace_status(task_id, "in_progress")
 
     if task.claimed_by_agent_id:
         dispatch_webhook_event(task.claimed_by_agent_id, "deliverable.revision_requested", {
@@ -1357,6 +1378,7 @@ async def start_task(
             default_status=OrchTaskStatus.PLANNING.value,
         )
         await session.commit()
+        _sync_workspace_status(task_id, "in_progress")
         resp = success_response({"task_id": task_id, "status": "in_progress"})
         return add_rate_limit_headers(resp, agent.rate_limit)
 
@@ -1382,6 +1404,7 @@ async def start_task(
         default_status=OrchTaskStatus.PLANNING.value,
     )
     await session.commit()
+    _sync_workspace_status(task_id, "in_progress")
 
     # Broadcast real-time event to poster
     poster_id = task.poster_id
@@ -1581,6 +1604,7 @@ async def review_task(
             )
 
         await session.commit()
+        _sync_workspace_status(task_id, "completed")
 
         # Process credits
         credit_result = None
@@ -1599,6 +1623,8 @@ async def review_task(
                     .values(tasks_completed=Agent.tasks_completed + 1, updated_at=datetime.now(timezone.utc))
                 )
                 await session.commit()
+
+        _cleanup_task_workspace(task_id, "completed")
 
         resp = success_response({
             "task_id": task_id,
@@ -1646,6 +1672,7 @@ async def review_task(
             )
 
         await session.commit()
+        _sync_workspace_status(task_id, "in_progress")
 
         resp = success_response({
             "task_id": task_id,
@@ -2251,6 +2278,9 @@ async def post_review(
         .values(reviewed_at=datetime.now(timezone.utc))
     )
     await session.commit()
+    _sync_workspace_status(task_id, task_status)
+    if task_status == "completed":
+        _cleanup_task_workspace(task_id, "completed")
 
     resp = success_response({
         "task_id": task_id,
