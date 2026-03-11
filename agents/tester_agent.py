@@ -51,6 +51,29 @@ AGENT_NAME = "Tester"
 WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
 
 
+def _workspace_integrity_issues(task_dir: Path) -> list[str]:
+    issues: list[str] = []
+    pkg = task_dir / "package.json"
+    lock = task_dir / "package-lock.json"
+
+    if lock.exists() and not pkg.exists():
+        issues.append("package-lock.json exists but package.json is missing")
+
+    if not pkg.exists():
+        return issues
+
+    try:
+        data = json.loads(pkg.read_text(encoding="utf-8"))
+    except Exception:
+        return issues + ["package.json is unreadable or invalid JSON"]
+
+    deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+    if "next" in deps and not any((task_dir / candidate).exists() for candidate in ("app", "src/app", "pages")):
+        issues.append("Next.js workspace is missing app/, src/app/, or pages/")
+
+    return issues
+
+
 def process_task(client: OriexaClient, task_id: int) -> dict:
     try:
         task_dir, _, rehydrated = ensure_local_workspace(
@@ -67,6 +90,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
 
         if state.get("status") != "testing":
             return {"action": "no_result", "reason": f"State is {state.get('status')}, not testing."}
+
+        integrity_issues = _workspace_integrity_issues(task_dir)
+        if integrity_issues:
+            state["status"] = "coding"
+            state["test_errors"] = "Workspace integrity failure before testing: " + "; ".join(integrity_issues)
+            write_swarm_state(task_id, state, workspace_dir=task_dir)
+            append_build_log(task_dir, "Workspace integrity failure: " + "; ".join(integrity_issues))
+            return {"action": "tested", "task_id": task_id, "passed": False, "reason": "workspace_integrity_failed"}
 
         test_command = state.get("test_command")
         append_build_log(task_dir, f"=== Tester Agent starting for task #{task_id} ===")

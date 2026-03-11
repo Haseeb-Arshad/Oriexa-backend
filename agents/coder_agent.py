@@ -234,6 +234,78 @@ def _run_scaffold_command(scaffold_cmd: str, task_dir: Path) -> tuple[str, int, 
     return effective_cmd, rc, out
 
 
+def _workspace_integrity_issues(task_dir: Path, state: dict | None = None) -> list[str]:
+    issues: list[str] = []
+    pkg_path = task_dir / "package.json"
+    lock_path = task_dir / "package-lock.json"
+    plan = (state or {}).get("plan") or {}
+    project_type = str(plan.get("project_type") or "").lower()
+
+    if lock_path.exists() and not pkg_path.exists():
+        issues.append("package-lock.json exists but package.json is missing")
+
+    if (state or {}).get("scaffolded") and not pkg_path.exists():
+        issues.append("workspace is marked scaffolded but package.json is missing")
+
+    if project_type in {"nextjs", "react", "vite"} and not pkg_path.exists():
+        issues.append(f"{project_type} project is missing package.json")
+
+    if not pkg_path.exists():
+        return issues
+
+    try:
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except Exception:
+        return issues + ["package.json is unreadable or invalid JSON"]
+
+    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+
+    def _major(version_spec: str | None) -> int | None:
+        match = re.search(r"(\d+)", str(version_spec or ""))
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    if project_type == "nextjs":
+        for dep_name in ("next", "react", "react-dom"):
+            if dep_name not in deps:
+                issues.append(f"package.json is missing required dependency '{dep_name}'")
+
+        react_major = _major(deps.get("react"))
+        react_dom_major = _major(deps.get("react-dom"))
+        if react_major and react_dom_major and react_major != react_dom_major:
+            issues.append(
+                f"package.json has mismatched React majors: react={deps.get('react')} react-dom={deps.get('react-dom')}"
+            )
+
+        if not any((task_dir / candidate).exists() for candidate in ("app", "src/app", "pages")):
+            issues.append("Next.js workspace is missing app/, src/app/, or pages/")
+
+    return issues
+
+
+def _reset_corrupt_workspace(task_dir: Path, state: dict, issues: list[str]) -> dict:
+    log_warn(
+        "Workspace integrity check failed. Resetting for a clean re-scaffold: "
+        + "; ".join(issues),
+        AGENT_NAME,
+    )
+    append_build_log(task_dir, "Workspace integrity reset: " + "; ".join(issues))
+    _cleanup_scaffold_artifacts(task_dir)
+    state["status"] = "coding"
+    state["scaffolded"] = False
+    state["current_step"] = 0
+    state["completed_steps"] = []
+    state["files"] = []
+    state["test_errors"] = "Workspace was auto-reset because project structure became invalid."
+    if not state.get("plan"):
+        state["total_steps"] = 0
+    return state
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # STEP 1: PLAN — Break the task into implementation steps
 # ═══════════════════════════════════════════════════════════════════════════
@@ -276,6 +348,11 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "- When in doubt: choose 'nextjs'. It is ALWAYS the safe default. The NEXTJS framework MUST be prioritized before you proceed with implementation.\n"
         "- For 'nextjs' always use scaffold_command: "
         f"'{DEFAULT_NEXT_SCAFFOLD_COMMAND}'\n\n"
+        "PACKAGE INTEGRITY RULES:\n"
+        "- Do NOT remove package.json, next-env.d.ts, app/, src/app/, or pages/ once scaffolded.\n"
+        "- If you change package.json, keep next/react/react-dom present and compatible.\n"
+        "- react and react-dom MUST stay on the same major version.\n"
+        "- Never leave the repo in a partial state with only package-lock.json or only node_modules.\n\n"
         "CRITICAL — STEP DESCRIPTION RULES:\n"
         "- Each step's 'description' MUST be a DETAILED paragraph (3-5 sentences minimum) "
         "explaining exactly what to implement, the visual design, behavior, and any edge cases.\n"
@@ -396,6 +473,9 @@ def generate_step_code(
         "proper imports, hooks, responsive Tailwind classes, and accessible HTML.\n"
         "- NEVER use placeholder text like 'TODO' or 'Add your code here'. Write the actual code.\n"
         "- NEVER import components or modules that don't exist in the project.\n"
+        "- Preserve scaffold integrity: do not delete package.json, next-env.d.ts, app/, src/app/, or pages/.\n"
+        "- If editing package.json, keep next/react/react-dom installed and keep react/react-dom on the same major version.\n"
+        "- Never output a repo state that would leave only package-lock.json without package.json.\n"
         "- All code must be SELF-CONTAINED and FUNCTIONAL — it should work immediately."
     )
     if skill_contents:
@@ -734,6 +814,11 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
 
         if state.get("status") != "coding":
             return {"action": "no_result", "reason": f"State is {state.get('status')}, not coding."}
+
+        integrity_issues = _workspace_integrity_issues(task_dir, state)
+        if integrity_issues:
+            state = _reset_corrupt_workspace(task_dir, state, integrity_issues)
+            _save_state(state_file, state)
 
         # Hard retry cap: block deployment instead of force-advancing bad code.
         MAX_CODING_ITERATIONS = 5
