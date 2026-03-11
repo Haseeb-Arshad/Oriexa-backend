@@ -25,6 +25,7 @@ from typing import Optional, Any
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from oriexa_mcp.errors import parse_api_error
 
 logger = logging.getLogger("oriexa_mcp")
 
@@ -67,6 +68,13 @@ class _OriexaClient:
             headers={"Content-Type": "application/json"},
         )
 
+    def _request_url(self, path: str) -> str:
+        if not path.startswith("/api/"):
+            return path
+
+        base = httpx.URL(self._base_url)
+        return str(base.copy_with(path=path))
+
     async def start(self) -> None:
         """Open the underlying HTTP connection pool."""
         self._client = self._build_client()
@@ -77,33 +85,74 @@ class _OriexaClient:
             await self._client.aclose()
             self._client = None
 
-    def _headers(self, api_key: str) -> dict[str, str]:
+    def _headers(
+        self,
+        api_key: str = "",
+        extra_headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, str]:
         key = api_key or self._default_key
-        return {"Authorization": f"Bearer {key}"}
+        headers: dict[str, str] = {}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
+
+    def _handle_response(self, response: httpx.Response) -> dict:
+        if response.status_code >= 400:
+            try:
+                body = response.json()
+            except Exception:
+                body = {}
+            raise parse_api_error(response.status_code, body)
+
+        if response.status_code == 204:
+            return {"ok": True}
+
+        try:
+            return response.json()
+        except Exception:
+            return {"ok": True, "status_code": response.status_code}
 
     async def get(self, path: str, api_key: str = "", **kwargs: Any) -> dict:
         if not self._client:
             self._client = self._build_client()
-        r = await self._client.get(path, headers=self._headers(api_key), **kwargs)
-        return r.json()
+        headers = self._headers(
+            api_key=api_key,
+            extra_headers=kwargs.pop("extra_headers", None),
+        )
+        r = await self._client.get(self._request_url(path), headers=headers, **kwargs)
+        return self._handle_response(r)
 
     async def post(self, path: str, api_key: str = "", **kwargs: Any) -> dict:
         if not self._client:
             self._client = self._build_client()
-        r = await self._client.post(path, headers=self._headers(api_key), **kwargs)
-        return r.json()
+        headers = self._headers(
+            api_key=api_key,
+            extra_headers=kwargs.pop("extra_headers", None),
+        )
+        r = await self._client.post(self._request_url(path), headers=headers, **kwargs)
+        return self._handle_response(r)
 
     async def patch(self, path: str, api_key: str = "", **kwargs: Any) -> dict:
         if not self._client:
             self._client = self._build_client()
-        r = await self._client.patch(path, headers=self._headers(api_key), **kwargs)
-        return r.json()
+        headers = self._headers(
+            api_key=api_key,
+            extra_headers=kwargs.pop("extra_headers", None),
+        )
+        r = await self._client.patch(self._request_url(path), headers=headers, **kwargs)
+        return self._handle_response(r)
 
     async def delete(self, path: str, api_key: str = "", **kwargs: Any) -> dict:
         if not self._client:
             self._client = self._build_client()
-        r = await self._client.delete(path, headers=self._headers(api_key), **kwargs)
-        return r.json()
+        headers = self._headers(
+            api_key=api_key,
+            extra_headers=kwargs.pop("extra_headers", None),
+        )
+        r = await self._client.delete(self._request_url(path), headers=headers, **kwargs)
+        return self._handle_response(r)
 
 
 _client = _OriexaClient()
@@ -117,11 +166,40 @@ mcp = FastMCP(
     "Oriexa",
     instructions=(
         "Oriexa is an AI-agent freelancer marketplace. "
-        "Use these tools to browse open tasks, claim tasks you can complete, "
-        "submit your work, and check your credits. "
-        "All tools require an api_key (your pre-provisioned th_agent_... Bearer token)."
+        "Use the agent tools with a th_agent_* API key to browse open tasks, claim tasks, "
+        "submit deliverables, and manage agent state. "
+        "Use the poster tools with a user_id obtained from register_user or login_user "
+        "to create tasks and manage the same poster lifecycle that the frontend uses."
     ),
 )
+
+
+def _user_headers(user_id: int) -> dict[str, str]:
+    return {"X-User-ID": str(user_id)}
+
+
+def _user_task_payload(
+    title: str,
+    description: str,
+    budget_credits: int,
+    category_id: Optional[int] = None,
+    requirements: Optional[str] = None,
+    deadline: Optional[str] = None,
+    max_revisions: int = 2,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "title": title,
+        "description": description,
+        "budget_credits": budget_credits,
+        "max_revisions": max_revisions,
+    }
+    if category_id is not None:
+        payload["category_id"] = category_id
+    if requirements:
+        payload["requirements"] = requirements
+    if deadline:
+        payload["deadline"] = deadline
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +697,243 @@ async def get_agent_profile(api_key: str, agent_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Poster / self-serve user tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def register_user(email: str, password: str, name: str) -> dict:
+    """
+    Register a new Oriexa user account for poster-side operations.
+
+    This mirrors the frontend registration flow. On success, keep the returned
+    user_id and pass it into poster tools such as create_user_task.
+
+    Args:
+        email: Account email address.
+        password: Account password (minimum 6 characters).
+        name: Display name.
+
+    Returns:
+        Plain JSON with id, email, and name.
+    """
+    return await _client.post(
+        "/api/auth/register",
+        json={"email": email, "password": password, "name": name},
+    )
+
+
+@mcp.tool()
+async def login_user(email: str, password: str) -> dict:
+    """
+    Log in as a Oriexa user and retrieve the poster user_id.
+
+    This mirrors the frontend login flow for external agents that need to
+    operate on poster routes through MCP.
+
+    Args:
+        email: Account email address.
+        password: Account password.
+
+    Returns:
+        Plain JSON with id, email, and name.
+    """
+    return await _client.post(
+        "/api/auth/login",
+        json={"email": email, "password": password},
+    )
+
+
+@mcp.tool()
+async def get_user_profile(user_id: int) -> dict:
+    """
+    Fetch the current poster profile and credit balance.
+
+    Args:
+        user_id: The integer user ID returned by register_user or login_user.
+
+    Returns:
+        Plain JSON profile for the authenticated poster.
+    """
+    return await _client.get(
+        "/user/profile",
+        extra_headers=_user_headers(user_id),
+    )
+
+
+@mcp.tool()
+async def get_user_tasks(user_id: int) -> dict:
+    """
+    List tasks posted by the current poster account.
+
+    Args:
+        user_id: The integer user ID returned by register_user or login_user.
+
+    Returns:
+        Plain JSON array of tasks.
+    """
+    return await _client.get(
+        "/user/tasks",
+        extra_headers=_user_headers(user_id),
+    )
+
+
+@mcp.tool()
+async def get_user_task(user_id: int, task_id: int) -> dict:
+    """
+    Fetch a posted task with claims, deliverables, and conversation history.
+
+    Args:
+        user_id: Poster user ID.
+        task_id: Task ID.
+
+    Returns:
+        Plain JSON task detail.
+    """
+    return await _client.get(
+        f"/user/tasks/{task_id}",
+        extra_headers=_user_headers(user_id),
+    )
+
+
+@mcp.tool()
+async def create_user_task(
+    user_id: int,
+    title: str,
+    description: str,
+    budget_credits: int,
+    category_id: Optional[int] = None,
+    requirements: Optional[str] = None,
+    deadline: Optional[str] = None,
+    max_revisions: int = 2,
+) -> dict:
+    """
+    Create a task as a poster using the same route the frontend uses.
+
+    Args:
+        user_id: Poster user ID.
+        title: Task title.
+        description: Task description.
+        budget_credits: Budget in credits.
+        category_id: Optional category ID.
+        requirements: Optional acceptance criteria.
+        deadline: Optional ISO 8601 deadline.
+        max_revisions: Revision limit (0-5).
+
+    Returns:
+        Plain JSON containing the new task ID.
+    """
+    return await _client.post(
+        "/user/tasks",
+        json=_user_task_payload(
+            title=title,
+            description=description,
+            budget_credits=budget_credits,
+            category_id=category_id,
+            requirements=requirements,
+            deadline=deadline,
+            max_revisions=max_revisions,
+        ),
+        extra_headers=_user_headers(user_id),
+    )
+
+
+@mcp.tool()
+async def accept_user_claim(user_id: int, task_id: int, claim_id: int) -> dict:
+    """
+    Accept a claim as the poster on a task you created.
+
+    Args:
+        user_id: Poster user ID.
+        task_id: Task ID.
+        claim_id: Claim ID to accept.
+
+    Returns:
+        Plain JSON success payload.
+    """
+    return await _client.post(
+        f"/user/tasks/{task_id}/accept-claim",
+        json={"claim_id": claim_id},
+        extra_headers=_user_headers(user_id),
+    )
+
+
+@mcp.tool()
+async def accept_user_deliverable(
+    user_id: int,
+    task_id: int,
+    deliverable_id: int,
+) -> dict:
+    """
+    Accept a submitted deliverable as the poster.
+
+    Args:
+        user_id: Poster user ID.
+        task_id: Task ID.
+        deliverable_id: Deliverable ID to accept.
+
+    Returns:
+        Plain JSON success payload.
+    """
+    return await _client.post(
+        f"/user/tasks/{task_id}/accept-deliverable",
+        json={"deliverable_id": deliverable_id},
+        extra_headers=_user_headers(user_id),
+    )
+
+
+@mcp.tool()
+async def request_user_revision(
+    user_id: int,
+    task_id: int,
+    deliverable_id: int,
+    notes: str,
+) -> dict:
+    """
+    Request a deliverable revision as the poster.
+
+    Args:
+        user_id: Poster user ID.
+        task_id: Task ID.
+        deliverable_id: Deliverable ID that needs revision.
+        notes: Revision feedback.
+
+    Returns:
+        Plain JSON success payload.
+    """
+    return await _client.post(
+        f"/user/tasks/{task_id}/request-revision",
+        json={"deliverable_id": deliverable_id, "notes": notes},
+        extra_headers=_user_headers(user_id),
+    )
+
+
+@mcp.tool()
+async def send_user_task_message(
+    user_id: int,
+    task_id: int,
+    content: str,
+    message_type: str = "text",
+) -> dict:
+    """
+    Send a conversation message as the poster.
+
+    Args:
+        user_id: Poster user ID.
+        task_id: Task ID.
+        content: Message body.
+        message_type: Message type, default text.
+
+    Returns:
+        Plain JSON message payload.
+    """
+    return await _client.post(
+        f"/user/tasks/{task_id}/messages",
+        json={"content": content, "message_type": message_type},
+        extra_headers=_user_headers(user_id),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Webhook tools
 # ---------------------------------------------------------------------------
 
@@ -723,9 +1038,9 @@ cancelled
 delivered can go back to in_progress when poster requests revision.
 
 ## Authentication
-All API calls require: Authorization: Bearer th_agent_<64 hex chars>
-API keys are pre-provisioned for connected agents.
-Pass as api_key parameter to every tool.
+- Worker-agent tools require: Authorization: Bearer th_agent_<64 hex chars>
+- Poster/self-serve tools use a user_id returned by register_user or login_user
+- Use agent auth for browse/claim/deliver flows and poster auth for create/accept/revise flows
 
 ## Rate Limiting
 100 requests per minute per API key.

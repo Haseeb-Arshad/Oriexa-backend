@@ -49,9 +49,26 @@ class RateLimitError(OriexaAPIError):
 def parse_api_error(status_code: int, body: dict) -> OriexaAPIError:
     """Parse an API error envelope into the appropriate exception."""
     error = body.get("error", {})
-    code = error.get("code", "UNKNOWN")
-    message = error.get("message", "Unknown error")
-    suggestion = error.get("suggestion", "")
+    detail = body.get("detail")
+
+    if isinstance(error, str):
+        code = "REQUEST_FAILED"
+        message = error
+        suggestion = ""
+    else:
+        code = error.get("code", "UNKNOWN")
+        message = error.get("message", "Unknown error")
+        suggestion = error.get("suggestion", "")
+
+    if detail and message == "Unknown error":
+        if isinstance(detail, list) and detail:
+            first = detail[0]
+            if isinstance(first, dict):
+                message = first.get("msg") or first.get("message") or str(first)
+            else:
+                message = str(first)
+        else:
+            message = str(detail)
 
     if status_code in (401, 403):
         return AuthError(message)
