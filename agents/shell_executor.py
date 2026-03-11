@@ -9,6 +9,8 @@ timeout handling, and retry logic.
 from __future__ import annotations
 
 import os
+import json
+import re
 import subprocess
 import sys
 import time
@@ -135,17 +137,80 @@ def run_npm_install(task_dir: Path, retries: int = 2) -> tuple[int, str]:
     Run npm install with retry logic.
     Returns (return_code, output).
     """
+    def _read_json(path: Path) -> dict:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _extract_major(version_spec: str | None) -> int | None:
+        if not version_spec:
+            return None
+        match = re.search(r"(\d+)", str(version_spec))
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    def _npm_health_issues() -> list[str]:
+        pkg = task_dir / "package.json"
+        if not pkg.exists():
+            return []
+
+        pkg_data = _read_json(pkg)
+        deps = {**pkg_data.get("dependencies", {}), **pkg_data.get("devDependencies", {})}
+        issues: list[str] = []
+
+        react_major = _extract_major(deps.get("react"))
+        react_dom_major = _extract_major(deps.get("react-dom"))
+        if react_major and react_dom_major and react_major != react_dom_major:
+            issues.append(
+                f"package.json requests mismatched React majors: react={deps.get('react')} react-dom={deps.get('react-dom')}"
+            )
+
+        if "next" not in deps:
+            return issues
+
+        required_paths = [
+            task_dir / "node_modules" / "next" / "package.json",
+            task_dir / "node_modules" / "react" / "package.json",
+            task_dir / "node_modules" / "react" / "index.js",
+            task_dir / "node_modules" / "react-dom" / "package.json",
+            task_dir / "node_modules" / "react-dom" / "index.js",
+            task_dir / "node_modules" / "next" / "dist" / "compiled" / "@opentelemetry" / "api" / "package.json",
+            task_dir / "node_modules" / "next" / "dist" / "compiled" / "@napi-rs" / "triples" / "package.json",
+        ]
+
+        for path in required_paths:
+            if not path.exists():
+                issues.append(f"missing required Next.js runtime artifact: {path.relative_to(task_dir)}")
+
+        return issues
+
     # Cap Node.js heap to 512 MB to prevent OOM kills on small droplets
     node_env = {"NODE_OPTIONS": "--max-old-space-size=512"}
+    force_clean = False
     for attempt in range(retries + 1):
+        if force_clean:
+            run_shell_combined("rm -rf node_modules package-lock.json", task_dir)
+            time.sleep(1)
+
         rc, output = run_shell_combined("npm install", task_dir, timeout=7200, env=node_env)
         if rc == 0:
-            return rc, output
+            issues = _npm_health_issues()
+            if not issues:
+                return rc, output
+            output = output + "\n\n[NPM HEALTH CHECK FAILED]\n" + "\n".join(f"- {issue}" for issue in issues)
 
         if attempt < retries:
-            # Clean and retry
-            run_shell_combined("rm -rf node_modules package-lock.json", task_dir)
+            force_clean = True
             time.sleep(2)
+            continue
+
+        if rc == 0:
+            return rc, output
 
     return rc, output
 

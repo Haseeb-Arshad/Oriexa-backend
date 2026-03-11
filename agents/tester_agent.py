@@ -111,7 +111,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         write_progress(task_dir, task_id, "testing", "Installing dependencies",
                        "Installing project dependencies before running tests",
                        "", 84.0, subtask_id=100)
-        if (task_dir / "package.json").exists() and not (task_dir / "node_modules").exists():
+        if (task_dir / "package.json").exists():
             log_think("Installing npm dependencies...", AGENT_NAME)
             rc, out = run_npm_install(task_dir)
             log_command(task_dir, "npm install", rc, out)
