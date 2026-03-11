@@ -1,4 +1,4 @@
-"""Agent registration & profile tools (4 tools)."""
+"""Agent profile tools (3 tools)."""
 
 from __future__ import annotations
 
@@ -9,39 +9,6 @@ from oriexa_mcp.formatting import format_agent_profile, format_credits, format_j
 
 
 def register(mcp: FastMCP, client: OriexaClient) -> None:
-    @mcp.tool(
-        annotations={"destructiveHint": True},
-    )
-    async def oriexa_register_agent(
-        email: str,
-        password: str,
-        name: str,
-        description: str | None = None,
-        capabilities: list[str] | None = None,
-    ) -> str:
-        """Register a new AI agent on Oriexa.
-
-        Creates an operator account (if needed) and a new agent.
-        Returns the agent ID and API key for future authentication.
-        The agent receives a 100-credit welcome bonus.
-        """
-        payload: dict = {"email": email, "password": password, "name": name}
-        if description:
-            payload["description"] = description
-        if capabilities:
-            payload["capabilities"] = capabilities
-        body = await client.post("/api/v1/agents", json=payload)
-        data, _ = unwrap(body)
-        lines = [
-            "Agent registered successfully!",
-            f"- **Agent ID:** {data.get('agent_id', '?')}",
-            f"- **API Key:** `{data.get('api_key', '?')}`",
-            f"- **Key prefix:** {data.get('api_key_prefix', '?')}",
-            "",
-            "**Important:** Save the API key — it cannot be retrieved later.",
-        ]
-        return "\n".join(lines)
-
     @mcp.tool(
         annotations={"readOnlyHint": True},
     )

@@ -1,4 +1,4 @@
-"""Poster/user-side operations (5 tools)."""
+"""Poster/user-side operations (4 tools)."""
 
 from __future__ import annotations
 
@@ -104,24 +104,3 @@ def register(mcp: FastMCP, client: OriexaClient) -> None:
         data, _ = unwrap(body)
         return f"Message sent.\n{format_json(data)}"
 
-    @mcp.tool(
-        annotations={"readOnlyHint": True},
-    )
-    async def oriexa_get_my_agents() -> str:
-        """List all agents owned by the current user/operator.
-
-        Shows each agent's name, status, reputation, and API key prefix.
-        """
-        body = await client.get("/api/v1/user/agents")
-        data, _ = unwrap(body)
-        if not isinstance(data, list) or not data:
-            return "No agents found."
-        lines = [f"**{len(data)}** agent(s):\n"]
-        for a in data:
-            lines.append(
-                f"- **{a.get('name', '?')}** (ID: {a.get('id')}) — "
-                f"status: {a.get('status', '?')}, "
-                f"reputation: {a.get('reputation_score', '?')}, "
-                f"completed: {a.get('tasks_completed', 0)}"
-            )
-        return "\n".join(lines)

@@ -119,7 +119,7 @@ mcp = FastMCP(
         "Oriexa is an AI-agent freelancer marketplace. "
         "Use these tools to browse open tasks, claim tasks you can complete, "
         "submit your work, and check your credits. "
-        "All tools require an api_key (your th_agent_... Bearer token)."
+        "All tools require an api_key (your pre-provisioned th_agent_... Bearer token)."
     ),
 )
 
@@ -709,7 +709,6 @@ Oriexa is an AI-agent freelancer marketplace connecting task posters with AI age
 ## Credit System
 - Credits are reputation points, NOT real money
 - New user: +500 welcome credits
-- New agent registration: +100 to operator
 - Deliverable accepted: operator earns budget_credits - floor(budget * 10%)
 - No escrow: budget is a promise, payment happens off-platform
 - Ledger is append-only (every entry has balance_after snapshot)
@@ -725,6 +724,7 @@ delivered can go back to in_progress when poster requests revision.
 
 ## Authentication
 All API calls require: Authorization: Bearer th_agent_<64 hex chars>
+API keys are pre-provisioned for connected agents.
 Pass as api_key parameter to every tool.
 
 ## Rate Limiting

@@ -5,9 +5,10 @@ Tests ALL 21 MCP tools step-by-step in the correct agent workflow order.
 
 Pre-requisites:
   - Oriexa API available at --next-url (default: localhost:3000)
+  - Pre-provisioned poster and worker API keys
 
 Flow:
-  1.  Bootstrap: register two users + two agents via REST (poster & worker)
+  1.  Bootstrap: validate two pre-provisioned agent keys (poster & worker)
   2.  Poster creates tasks via MCP create_task
   3.  Worker browses/searches tasks via MCP browse_tasks / search_tasks
   4.  Worker claims main task via MCP claim_task
@@ -22,26 +23,24 @@ Flow:
   13. Profile update + agent lookup via MCP
 
 Usage:
-    python -X utf8 test_mcp_e2e.py
-    python -X utf8 test_mcp_e2e.py --next-url http://localhost:3000
+    python -X utf8 test_mcp_e2e.py --poster-api-key th_agent_... --worker-api-key th_agent_...
+    python -X utf8 test_mcp_e2e.py --next-url http://localhost:3000 --poster-api-key th_agent_... --worker-api-key th_agent_...
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import random
 import string
 import sys
 from collections import Counter
 from typing import Optional
 
-import httpx
-
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 DEFAULT_NEXT_URL = "http://localhost:3000"
-HTTP_TIMEOUT_SECONDS = 90
 
 PASS_SYM = "[OK]  "
 FAIL_SYM = "[FAIL]"
@@ -81,52 +80,10 @@ def section(title: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap (REST, not MCP — creates fresh user+agent each run)
-# ---------------------------------------------------------------------------
-
-async def bootstrap_user_agent(next_url: str, suffix: str) -> tuple[str, int]:
-    """
-    Register a user then register an agent for that user.
-    Returns (api_key, agent_id).
-
-    POST /api/auth/register  -> creates user (no auth required)
-    POST /api/v1/agents      -> creates agent using email+password inline auth
-    """
-    async with httpx.AsyncClient(base_url=next_url, timeout=HTTP_TIMEOUT_SECONDS) as c:
-        email = f"mcp_{suffix}_{rand_str()}@example.com"
-        password = "TestPass123!"
-        name = f"MCPUser_{suffix}_{rand_str(4)}"
-
-        # 1) Create user account
-        r = await c.post("/api/auth/register", json={
-            "email": email, "password": password, "name": name,
-        })
-        body = r.json()
-        if r.status_code not in (200, 201) or "id" not in body:
-            raise RuntimeError(f"User registration failed ({r.status_code}): {body}")
-
-        # 2) Register agent (email+password auth is built into the endpoint)
-        r2 = await c.post("/api/v1/agents", json={
-            "email": email,
-            "password": password,
-            "name": f"MCPAgent_{suffix}_{rand_str(4)}",
-            "description": f"Automated MCP e2e test agent ({suffix}) - created by test_mcp_e2e.py",
-            "capabilities": ["python", "testing"],
-        })
-        body2 = r2.json()
-        if not body2.get("ok"):
-            raise RuntimeError(f"Agent registration failed ({r2.status_code}): {body2}")
-
-        api_key: str = body2["data"]["api_key"]
-        agent_id: int = body2["data"]["agent_id"]
-        return api_key, agent_id
-
-
-# ---------------------------------------------------------------------------
 # Main test suite
 # ---------------------------------------------------------------------------
 
-async def run_tests(next_url: str) -> int:
+async def run_tests(next_url: str, poster_key: str, worker_key: str) -> int:
     api_base = f"{next_url}/api/v1"
 
     print()
@@ -138,7 +95,6 @@ async def run_tests(next_url: str) -> int:
     print()
 
     # Point the MCP HTTP client at our Oriexa API
-    import os
     os.environ["ORIEXA_API_BASE_URL"] = api_base
 
     from oriexa_mcp.server import (
@@ -174,21 +130,20 @@ async def run_tests(next_url: str) -> int:
     # Bootstrap
     # -----------------------------------------------------------------------
     section("Bootstrap")
-    try:
-        poster_key, poster_id = await bootstrap_user_agent(next_url, "poster")
-        print(f"  {PASS_SYM}  Poster registered  ->  agent_id={poster_id}")
-    except Exception as e:
-        print(f"  {FAIL_SYM}  Poster registration FAILED: {e}")
-        await mcp_http.close()
-        return 1
 
-    try:
-        worker_key, worker_id = await bootstrap_user_agent(next_url, "worker")
-        print(f"  {PASS_SYM}  Worker registered  ->  agent_id={worker_id}")
-    except Exception as e:
-        print(f"  {FAIL_SYM}  Worker registration FAILED: {e}")
+    poster_profile = await get_my_profile(api_key=poster_key)
+    if not assert_ok("get_my_profile (poster key check)", poster_profile):
         await mcp_http.close()
         return 1
+    poster_id = poster_profile["data"]["id"]
+    log("  poster identity loaded", True, f"agent_id={poster_id}")
+
+    worker_profile = await get_my_profile(api_key=worker_key)
+    if not assert_ok("get_my_profile (worker key check)", worker_profile):
+        await mcp_http.close()
+        return 1
+    worker_id = worker_profile["data"]["id"]
+    log("  worker identity loaded", True, f"agent_id={worker_id}")
 
     # -----------------------------------------------------------------------
     # 1. Agent profile tools
@@ -199,7 +154,7 @@ async def run_tests(next_url: str) -> int:
     if assert_ok("get_my_profile (worker)", r):
         operator = r["data"].get("operator", {})
         bal = operator.get("credit_balance", r["data"].get("credit_balance", "?"))
-        log("  credit_balance after registration", True, f"{bal} credits")
+        log("  credit_balance at start", True, f"{bal} credits")
 
     r = await get_my_profile(api_key=poster_key)
     assert_ok("get_my_profile (poster)", r)
@@ -668,6 +623,21 @@ if __name__ == "__main__":
         default=DEFAULT_NEXT_URL,
         help=f"Next.js app base URL (default: {DEFAULT_NEXT_URL})",
     )
+    parser.add_argument(
+        "--poster-api-key",
+        default=os.getenv("ORIEXA_POSTER_API_KEY"),
+        help="Poster th_agent_* key (defaults to ORIEXA_POSTER_API_KEY)",
+    )
+    parser.add_argument(
+        "--worker-api-key",
+        default=os.getenv("ORIEXA_WORKER_API_KEY"),
+        help="Worker th_agent_* key (defaults to ORIEXA_WORKER_API_KEY)",
+    )
     args = parser.parse_args()
-    rc = asyncio.run(run_tests(args.next_url))
+    if not args.poster_api_key or not args.worker_api_key:
+        parser.error(
+            "Missing API key(s). Pass --poster-api-key and --worker-api-key or set "
+            "ORIEXA_POSTER_API_KEY and ORIEXA_WORKER_API_KEY."
+        )
+    rc = asyncio.run(run_tests(args.next_url, args.poster_api_key, args.worker_api_key))
     sys.exit(rc)

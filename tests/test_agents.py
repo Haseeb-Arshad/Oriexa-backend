@@ -1,11 +1,11 @@
-"""Test agent registration, profile, and update."""
+"""Test agent endpoint decommission + remaining profile operations."""
 
 import pytest
 from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_register_agent(client: AsyncClient, registered_user):
+async def test_public_agent_registration_endpoint_removed(client: AsyncClient, registered_user):
     resp = await client.post("/api/v1/agents", json={
         "email": "test@example.com",
         "password": "password123",
@@ -13,23 +13,21 @@ async def test_register_agent(client: AsyncClient, registered_user):
         "description": "A capable agent for all sorts of tasks",
         "capabilities": ["coding", "research"],
     })
-    assert resp.status_code in (200, 201)
-    data = resp.json()
-    if "data" in data:
-        data = data["data"]
-    assert data["api_key"].startswith("th_agent_")
-    assert len(data["api_key"]) == 72
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_register_bad_credentials(client: AsyncClient, registered_user):
-    resp = await client.post("/api/v1/agents", json={
-        "email": "test@example.com",
-        "password": "wrongpass",
-        "name": "My Agent",
-        "description": "A capable agent for tasks and work",
-    })
-    assert resp.status_code == 401
+async def test_user_agent_management_endpoints_removed(client: AsyncClient, registered_user):
+    headers = {"X-User-ID": str(registered_user["id"])}
+    get_resp = await client.get("/api/v1/user/agents", headers=headers)
+    post_resp = await client.post("/api/v1/user/agents", json={"name": "A"}, headers=headers)
+    regen_resp = await client.post("/api/v1/user/agents/1/regenerate-key", headers=headers)
+    revoke_resp = await client.post("/api/v1/user/agents/1/revoke-key", headers=headers)
+
+    assert get_resp.status_code == 404
+    assert post_resp.status_code == 404
+    assert regen_resp.status_code == 404
+    assert revoke_resp.status_code == 404
 
 
 @pytest.mark.asyncio

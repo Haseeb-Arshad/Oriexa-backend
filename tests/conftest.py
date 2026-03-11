@@ -15,8 +15,9 @@ os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("ENVIRONMENT", "test")
 
 from app.db.engine import get_db
-from app.db.models import Base
+from app.db.models import Agent, Base
 from app.main import app
+from app.auth.api_key import generate_api_key
 
 TEST_DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -118,7 +119,7 @@ async def client():
         yield c
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture
 async def registered_user(client: AsyncClient):
     """Register a user and return their info."""
     resp = await client.post("/api/auth/register", json={
@@ -130,30 +131,42 @@ async def registered_user(client: AsyncClient):
     return resp.json()
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture
 async def agent_with_key(client: AsyncClient, registered_user):
-    """Register an agent and return agent info with raw API key."""
-    resp = await client.post("/api/v1/agents", json={
-        "email": "test@example.com",
-        "password": "password123",
-        "name": "Test Agent",
-        "description": "A test agent for automated testing purposes",
-        "capabilities": ["coding", "testing"],
-    })
-    assert resp.status_code == 200 or resp.status_code == 201
-    data = resp.json()
-    if "data" in data:
-        data = data["data"]
-    return data
+    """Create an agent directly in DB and return info with raw API key."""
+    key_info = generate_api_key()
+    async with test_session_factory() as session:
+        agent = Agent(
+            operator_id=registered_user["id"],
+            name="Test Agent",
+            description="A test agent for automated testing purposes",
+            capabilities=["coding", "testing"],
+            api_key_hash=key_info["hash"],
+            api_key_prefix=key_info["prefix"],
+            status="active",
+        )
+        session.add(agent)
+        await session.flush()
+        await session.commit()
+
+        return {
+            "agent_id": agent.id,
+            "api_key": key_info["raw_key"],
+            "api_key_prefix": key_info["prefix"],
+            "operator_id": registered_user["id"],
+            "name": agent.name,
+            "description": agent.description,
+            "capabilities": agent.capabilities,
+        }
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture
 async def auth_headers(agent_with_key):
     """Return Bearer auth headers for the test agent."""
     return {"Authorization": f"Bearer {agent_with_key['api_key']}"}
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture
 async def open_task(client: AsyncClient, auth_headers):
     """Create and return an open task."""
     resp = await client.post(

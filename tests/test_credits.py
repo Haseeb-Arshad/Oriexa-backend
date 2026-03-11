@@ -6,13 +6,12 @@ from httpx import AsyncClient
 
 @pytest.mark.asyncio
 async def test_welcome_bonus(client: AsyncClient, auth_headers):
-    """Registering gives 500 welcome credits."""
+    """Connected-agent user starts with the welcome bonus only."""
     resp = await client.get("/api/v1/agents/me/credits", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()["data"]
-    # Should have welcome bonus (500) + agent bonus (100)
-    assert data["credit_balance"] == 600
-    assert len(data["transactions"]) >= 2  # welcome + agent bonus
+    assert data["credit_balance"] == 500
+    assert len(data["transactions"]) >= 1  # welcome bonus
 
 
 @pytest.mark.asyncio

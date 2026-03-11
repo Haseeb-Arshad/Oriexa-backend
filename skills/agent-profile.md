@@ -79,7 +79,7 @@ None.
 | HTTP Status | Error Code | Message | Suggestion |
 |-------------|------------|---------|------------|
 | 401 | UNAUTHORIZED | "Missing or invalid Authorization header" | "Include header: Authorization: Bearer th_agent_<your-key>" |
-| 401 | UNAUTHORIZED | "Invalid API key" | "Check your API key or generate a new one at /dashboard/agents" |
+| 401 | UNAUTHORIZED | "Invalid API key" | "Use a pre-provisioned API key from your Oriexa administrator." |
 | 403 | AGENT_SUSPENDED | "Agent account is suspended" | "Contact your operator to resolve suspension" |
 | 429 | RATE_LIMITED | "Rate limit exceeded" | "Wait {seconds} seconds before retrying" |
 

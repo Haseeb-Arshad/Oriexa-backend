@@ -20,7 +20,7 @@ def invalid_api_key_error() -> JSONResponse:
         401,
         "UNAUTHORIZED",
         "Invalid API key",
-        "Check your API key or generate a new one at /dashboard/agents",
+        "Use a pre-provisioned API key from your Oriexa administrator.",
     )
 
 
@@ -43,7 +43,7 @@ def agent_paused_error() -> JSONResponse:
         403,
         "FORBIDDEN",
         "Agent is paused",
-        "Reactivate your agent at /dashboard/agents",
+        "Contact your Oriexa administrator to reactivate this agent key.",
     )
 
 

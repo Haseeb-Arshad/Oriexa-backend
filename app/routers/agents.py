@@ -3,7 +3,6 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
 from sqlalchemy import and_, desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,20 +11,16 @@ from app.api.errors import (
     internal_error,
     invalid_parameter_error,
     not_found_error,
-    unauthorized_error,
     validation_error,
 )
 from app.api.pagination import decode_cursor, encode_cursor
-from app.auth.api_key import generate_api_key
 from app.auth.dependencies import get_current_agent
-from app.auth.password import verify_password
 from app.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from app.db.engine import get_db
 from app.db.models import Agent, Category, CreditTransaction, Task, TaskClaim, User
 from app.middleware.pipeline import AgentContext
 from app.middleware.rate_limit import add_rate_limit_headers
-from app.schemas.agents import RegisterAgentRequest, UpdateAgentRequest
-from app.services.credits import grant_agent_bonus
+from app.schemas.agents import UpdateAgentRequest
 
 router = APIRouter()
 
@@ -35,82 +30,6 @@ def _isoformat(dt: datetime | None) -> str | None:
         return None
     return dt.isoformat().replace("+00:00", "Z")
 
-
-# ─── POST /api/v1/agents — Register agent (email+password auth) ──────────────
-
-@router.post("")
-async def register_agent(
-    request: Request,
-    session: AsyncSession = Depends(get_db),
-):
-    try:
-        body = await request.json()
-    except Exception:
-        return validation_error(
-            "Invalid JSON body",
-            "Send { email, password, name, description, capabilities? }",
-        )
-
-    try:
-        data = RegisterAgentRequest(**body)
-    except Exception as e:
-        return validation_error(
-            str(e),
-            "Required fields: email, password, name (string), description (min 10 chars)",
-        )
-
-    # Authenticate user
-    result = await session.execute(
-        select(User.id, User.password_hash).where(User.email == data.email).limit(1)
-    )
-    user = result.first()
-
-    if not user or not user.password_hash:
-        return unauthorized_error("Invalid email or password")
-
-    if not verify_password(data.password, user.password_hash):
-        return unauthorized_error("Invalid email or password")
-
-    # Generate API key
-    key_info = generate_api_key()
-
-    try:
-        agent = Agent(
-            operator_id=user.id,
-            name=data.name,
-            description=data.description,
-            capabilities=data.capabilities,
-            category_ids=data.category_ids,
-            hourly_rate_credits=data.hourly_rate_credits,
-            api_key_hash=key_info["hash"],
-            api_key_prefix=key_info["prefix"],
-            status="active",
-        )
-        session.add(agent)
-        await session.flush()
-
-        # Grant bonus credits to operator
-        await grant_agent_bonus(session, user.id)
-        await session.commit()
-
-        return success_response(
-            {
-                "agent_id": agent.id,
-                "api_key": key_info["raw_key"],
-                "api_key_prefix": key_info["prefix"],
-                "operator_id": user.id,
-                "name": data.name,
-                "description": data.description,
-                "capabilities": data.capabilities,
-            },
-            201,
-        )
-    except Exception:
-        await session.rollback()
-        return internal_error()
-
-
-# ─── GET /api/v1/agents/me — Full profile ────────────────────────────────────
 
 @router.get("/me")
 async def get_my_profile(
@@ -566,3 +485,4 @@ async def get_my_credits(
         {"cursor": next_cursor, "has_more": has_more, "count": len(transactions)},
     )
     return add_rate_limit_headers(resp, agent.rate_limit)
+

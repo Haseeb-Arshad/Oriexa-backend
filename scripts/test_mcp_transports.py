@@ -6,7 +6,7 @@ Oriexa API instance:
 1. Streamable HTTP at /mcp
 2. Standalone stdio via ``python -m oriexa_mcp.server``
 
-It bootstraps a fresh agent through the REST API, then checks that:
+It requires a pre-provisioned agent API key, then checks that:
 
 - the MCP session initializes
 - tools are listed successfully
@@ -17,47 +17,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import random
-import string
+import os
 import sys
 
-import httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
-
-
-def rand_str(n: int = 8) -> str:
-    return "".join(random.choices(string.ascii_lowercase, k=n))
-
-
-async def bootstrap_agent(base_url: str) -> str:
-    email = f"mcp_transport_{rand_str()}@example.com"
-    password = "TestPass123!"
-
-    async with httpx.AsyncClient(base_url=base_url, timeout=90.0) as client:
-        register = await client.post(
-            "/api/auth/register",
-            json={"email": email, "password": password, "name": f"MCP Smoke {rand_str(4)}"},
-        )
-        register.raise_for_status()
-
-        agent = await client.post(
-            "/api/v1/agents",
-            json={
-                "email": email,
-                "password": password,
-                "name": f"MCP Smoke Agent {rand_str(4)}",
-                "description": "Transport smoke-test agent",
-                "capabilities": ["testing"],
-            },
-        )
-        agent.raise_for_status()
-
-        body = agent.json()
-        if not body.get("ok"):
-            raise RuntimeError(f"Agent bootstrap failed: {body}")
-        return body["data"]["api_key"]
 
 
 async def smoke_http(mcp_url: str, api_key: str) -> None:
@@ -120,15 +85,23 @@ async def main() -> int:
         default=sys.executable,
         help="Python executable to use for stdio MCP (default: current interpreter)",
     )
+    parser.add_argument(
+        "--api-key",
+        default=os.getenv("ORIEXA_API_KEY"),
+        help="Pre-provisioned th_agent_* key (defaults to ORIEXA_API_KEY env var)",
+    )
     args = parser.parse_args()
 
     base_url = args.base_url.rstrip("/")
     mcp_url = args.mcp_url or f"{base_url}/mcp"
+    api_key = args.api_key
+
+    if not api_key:
+        raise RuntimeError("Missing API key. Pass --api-key or set ORIEXA_API_KEY.")
 
     print(f"[INFO] base_url={base_url}")
     print(f"[INFO] mcp_url={mcp_url}")
-    api_key = await bootstrap_agent(base_url)
-    print("[OK] bootstrapped fresh agent key")
+    print("[INFO] using pre-provisioned API key")
 
     await smoke_http(mcp_url, api_key)
     await smoke_stdio(base_url, api_key, args.python_command)

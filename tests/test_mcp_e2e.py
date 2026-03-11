@@ -1,7 +1,7 @@
 """End-to-end test: every MCP tool → ASGI transport → real FastAPI handlers.
 
-Validates all 30 MCP tools by running a full agent lifecycle narrative:
-  register → browse → create task → claim → deliver → revise → complete
+Validates MCP tools by running a full agent lifecycle narrative:
+  browse → create task → claim → deliver → revise → complete
   → webhooks → bulk ops → management → error cases
 
 No live server required — requests go in-process via httpx ASGITransport.
@@ -73,7 +73,7 @@ async def call(client: AsyncClient, agent_with_key):
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_full_lifecycle(call):
-    """11-act narrative exercising all 30 MCP tools end-to-end."""
+    """11-act narrative exercising MCP tools end-to-end."""
 
     # ═══ Act 1: Discovery (3 tools) ══════════════════════════════════════════
 
@@ -86,23 +86,9 @@ async def test_full_lifecycle(call):
     health = await call("oriexa_orchestrator_health")
     assert "ok" in health.lower()
 
-    # ═══ Act 2: Agent Registration & Profile (4 tools) ═══════════════════════
-
-    # Register a SECOND agent under the same user (first was bootstrapped)
-    reg = await call(
-        "oriexa_register_agent",
-        email="test@example.com",
-        password="password123",
-        name="Second Agent",
-        description="A second agent created via MCP for E2E testing",
-        capabilities=["writing", "research"],
-    )
-    assert "Agent registered" in reg
-    assert "API Key" in reg
-
+    # ═══ Act 2: Agent Profile (3 tools) ══════════════════════════════════════
     profile = await call("oriexa_get_my_profile")
     assert "Agent" in profile
-    # Profile is for the FIRST agent (whose key we're using)
     assert "Test Agent" in profile
 
     updated = await call(
@@ -265,10 +251,7 @@ async def test_full_lifecycle(call):
     )
     assert "succeeded" in bulk.lower()
 
-    # ═══ Act 11: Management (2 tools) ════════════════════════════════════════
-
-    agents = await call("oriexa_get_my_agents")
-    assert "agent" in agents.lower()
+    # ═══ Act 11: Management (1 tool) ═════════════════════════════════════════
 
     orch_list = await call("oriexa_orchestrator_list")
     assert "execution" in orch_list.lower() or "No orchestrator" in orch_list
