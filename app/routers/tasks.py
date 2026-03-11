@@ -26,6 +26,7 @@ from app.api.errors import (
 from app.api.pagination import decode_cursor, encode_cursor
 from app.auth.dependencies import get_current_agent
 from app.db.engine import get_db
+from app.db.enums import OrchTaskStatus
 from app.db.models import (
     Agent,
     Category,
@@ -46,6 +47,7 @@ from app.services.credits import process_task_completion
 from app.services.crypto import encrypt_key
 from app.services.webhooks import dispatch_new_task_match, dispatch_webhook_event
 from app.api.events import event_broadcaster
+from app.orchestrator.legacy_bridge import ensure_legacy_execution
 
 router = APIRouter()
 
@@ -54,6 +56,18 @@ def _isoformat(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.isoformat().replace("+00:00", "Z")
+
+
+def _task_snapshot(task: Task) -> dict:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "requirements": task.requirements,
+        "budget_credits": task.budget_credits,
+        "category_id": task.category_id,
+        "status": task.status,
+    }
 
 
 # ─── GET /api/v1/tasks — Browse tasks ────────────────────────────────────────
@@ -1317,11 +1331,11 @@ async def start_task(
         return add_rate_limit_headers(resp, agent.rate_limit)
 
     result = await session.execute(
-        select(Task.id, Task.status, Task.claimed_by_agent_id, Task.poster_id)
+        select(Task)
         .where(Task.id == task_id)
         .limit(1)
     )
-    task = result.first()
+    task = result.scalar_one_or_none()
     if not task:
         resp = task_not_found_error(task_id)
         return add_rate_limit_headers(resp, agent.rate_limit)
@@ -1336,6 +1350,13 @@ async def start_task(
 
     # Idempotent: already in_progress is fine
     if task.status == "in_progress":
+        await ensure_legacy_execution(
+            session,
+            task_id=task.id,
+            task_snapshot=_task_snapshot(task),
+            default_status=OrchTaskStatus.PLANNING.value,
+        )
+        await session.commit()
         resp = success_response({"task_id": task_id, "status": "in_progress"})
         return add_rate_limit_headers(resp, agent.rate_limit)
 
@@ -1350,6 +1371,15 @@ async def start_task(
         update(Task)
         .where(Task.id == task_id)
         .values(status="in_progress", updated_at=datetime.now(timezone.utc))
+    )
+    await session.commit()
+
+    task.status = "in_progress"
+    await ensure_legacy_execution(
+        session,
+        task_id=task.id,
+        task_snapshot=_task_snapshot(task),
+        default_status=OrchTaskStatus.PLANNING.value,
     )
     await session.commit()
 

@@ -21,6 +21,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.engine import async_session
 from app.db.models import OrchSubtask, OrchTaskExecution
+from app.orchestrator.legacy_bridge import read_legacy_plan_subtasks, resolve_legacy_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +71,11 @@ LANG_MAP: dict[str, str] = {
 
 def _get_workspace_path(execution: OrchTaskExecution) -> Path:
     """Get the workspace path for an execution."""
-    if execution.workspace_path:
-        return Path(execution.workspace_path)
-    return Path(settings.WORKSPACE_ROOT) / f"task-{execution.id}"
+    return resolve_legacy_workspace(
+        task_id=execution.oriexa_task_id,
+        execution_id=execution.id,
+        workspace_path=execution.workspace_path,
+    )
 
 
 def _safe_resolve(workspace: Path, relative: str) -> Path:
@@ -202,6 +205,20 @@ async def get_execution_preview(execution_id: int) -> dict[str, Any]:
 
     ws = _get_workspace_path(execution)
     file_tree = _scan_directory(ws, ws) if ws.exists() else []
+    preview_subtasks = [
+        {
+            "id": st.id,
+            "order_index": st.order_index,
+            "title": st.title,
+            "description": st.description,
+            "status": st.status,
+            "result": st.result,
+            "files_changed": st.files_changed,
+        }
+        for st in subtasks
+    ]
+    if not preview_subtasks:
+        preview_subtasks = read_legacy_plan_subtasks(ws)
 
     return {
         "ok": True,
@@ -217,18 +234,7 @@ async def get_execution_preview(execution_id: int) -> dict[str, Any]:
             "error_message": execution.error_message,
             "claimed_credits": execution.claimed_credits,
             "file_tree": file_tree,
-            "subtasks": [
-                {
-                    "id": st.id,
-                    "order_index": st.order_index,
-                    "title": st.title,
-                    "description": st.description,
-                    "status": st.status,
-                    "result": st.result,
-                    "files_changed": st.files_changed,
-                }
-                for st in subtasks
-            ],
+            "subtasks": preview_subtasks,
             "created_at": execution.created_at.isoformat() if execution.created_at else None,
             "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
         },

@@ -11,9 +11,27 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from app.db.engine import async_session
-from app.db.models import OrchTaskExecution
+from app.db.enums import OrchTaskStatus
+from app.db.models import OrchTaskExecution, Task
+from app.orchestrator.legacy_bridge import (
+    ensure_legacy_execution,
+    read_legacy_progress_summary,
+    resolve_legacy_workspace,
+)
 
 router = APIRouter(prefix="/orchestrator/tasks", tags=["orchestrator"])
+
+
+def _task_snapshot(task: Task) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "requirements": task.requirements,
+        "budget_credits": task.budget_credits,
+        "category_id": task.category_id,
+        "status": task.status,
+    }
 
 
 @router.get("")
@@ -227,18 +245,51 @@ async def get_active_execution_for_task(task_id: int) -> dict[str, Any]:
         )
         execution = result.scalar_one_or_none()
 
+        if execution is None:
+            task_result = await session.execute(
+                select(Task)
+                .where(Task.id == task_id)
+                .limit(1)
+            )
+            task = task_result.scalar_one_or_none()
+            if task and task.claimed_by_agent_id and task.status in {
+                "claimed",
+                "in_progress",
+                "delivered",
+                "completed",
+            }:
+                execution = await ensure_legacy_execution(
+                    session,
+                    task_id=task.id,
+                    task_snapshot=_task_snapshot(task),
+                    default_status=OrchTaskStatus.PLANNING.value,
+                )
+                await session.commit()
+
     if not execution:
         return {"ok": True, "data": None}
 
     steps = progress_tracker.get_steps(execution.id)
     current_phase = steps[-1].phase if steps else None
     progress_pct = steps[-1].progress_pct if steps else 0
+    status = execution.status
+    if not steps:
+        legacy_workspace = resolve_legacy_workspace(
+            task_id=execution.oriexa_task_id,
+            execution_id=execution.id,
+            workspace_path=execution.workspace_path,
+        )
+        legacy = read_legacy_progress_summary(legacy_workspace)
+        if legacy:
+            current_phase = legacy.get("current_phase")
+            progress_pct = legacy.get("progress_pct", 0)
+            status = str(legacy.get("status") or status)
 
     return {
         "ok": True,
         "data": {
             "execution_id": execution.id,
-            "status": execution.status,
+            "status": status,
             "current_phase": current_phase,
             "progress_pct": progress_pct,
         },
