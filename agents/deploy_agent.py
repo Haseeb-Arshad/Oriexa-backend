@@ -41,6 +41,7 @@ from agents.git_ops import (
     append_commit_log,
     has_meaningful_implementation,
     verify_remote_has_main,
+    verify_remote_head_matches_local,
 )
 from agents.shell_executor import run_shell_combined, append_build_log, log_command
 from app.services.agent_workspaces import (
@@ -186,14 +187,19 @@ def run_vercel_deploy(
         return None
 
     commands: list[list[str]] = []
-    if production:
-        if use_linked_project:
+    if use_linked_project:
+        if production:
             commands.append(["vercel", "pull", "--yes", "--environment=production", f"--token={VERCEL_TOKEN}"])
-        commands.append(["vercel", "build", "--prod", f"--token={VERCEL_TOKEN}"])
-        commands.append(["vercel", "deploy", "--prebuilt", "--prod", "--public", "--yes", f"--token={VERCEL_TOKEN}"])
+            commands.append(["vercel", "build", "--prod", f"--token={VERCEL_TOKEN}"])
+            commands.append(["vercel", "deploy", "--prebuilt", "--prod", "--public", "--yes", f"--token={VERCEL_TOKEN}"])
+        else:
+            commands.append(["vercel", "pull", "--yes", "--environment=preview", f"--token={VERCEL_TOKEN}"])
+            commands.append(["vercel", "build", f"--token={VERCEL_TOKEN}"])
+            commands.append(["vercel", "deploy", "--prebuilt", "--public", "--yes", f"--token={VERCEL_TOKEN}"])
     else:
-        commands.append(["vercel", "build", f"--token={VERCEL_TOKEN}"])
-        deploy_cmd = ["vercel", "deploy", "--prebuilt", "--public", "--yes", f"--token={VERCEL_TOKEN}"]
+        deploy_cmd = ["vercel", "deploy", "--public", "--yes", f"--token={VERCEL_TOKEN}"]
+        if production:
+            deploy_cmd.append("--prod")
         if fallback_scope:
             deploy_cmd.append(f"--scope={fallback_scope}")
             log_think(f"Using fallback public scope: {fallback_scope}", AGENT_NAME)
@@ -337,6 +343,10 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             push_to_remote(task_dir)
             if not verify_remote_has_main(task_dir):
                 return fail("GitHub remote main branch missing; deployment blocked")
+        if not verify_remote_head_matches_local(task_dir):
+            push_to_remote(task_dir)
+            if not verify_remote_head_matches_local(task_dir):
+                return fail("GitHub remote main is behind local HEAD; deployment blocked")
 
         # ── Deploy to Vercel ──────────────────────────────────────────
         vercel_url = run_vercel_deploy(task_dir, production=True)

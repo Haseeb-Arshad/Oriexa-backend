@@ -43,6 +43,7 @@ from agents.git_ops import (
     append_commit_log,
     has_meaningful_implementation,
     verify_remote_has_main,
+    verify_remote_head_matches_local,
 )
 from agents.shell_executor import (
     run_shell_combined,
@@ -60,11 +61,11 @@ AGENT_NAME = "Coder"
 WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
 DEFAULT_NEXT_SCAFFOLD_COMMAND = (
     "npx create-next-app@latest ./ --typescript --tailwind --eslint "
-    "--app --no-src-dir --import-alias @/* --yes --force"
+    "--app --no-src-dir --import-alias @/* --yes --force --no-git"
 )
 NEXT15_SCAFFOLD_COMMAND = (
     "npx create-next-app@15 ./ --typescript --tailwind --eslint "
-    "--app --no-src-dir --import-alias @/* --yes --force"
+    "--app --no-src-dir --import-alias @/* --yes --force --no-git"
 )
 SCAFFOLD_TIMEOUT_SECONDS = int(os.environ.get("SCAFFOLD_TIMEOUT_SECONDS", "7200"))
 
@@ -149,10 +150,20 @@ def _cleanup_scaffold_artifacts(task_dir: Path) -> None:
         ".agent_lock",
         ".implementation_plan.json",
         ".swarm_state.json",
-        ".git",
         ".gitignore",
         "progress.jsonl",
+        "README.md",
         "tsconfig.json",
+        "next-env.d.ts",
+        "next.config.js",
+        "next.config.ts",
+        "next.config.mjs",
+        "postcss.config.js",
+        "postcss.config.mjs",
+        "eslint.config.js",
+        "eslint.config.mjs",
+        ".eslintrc.json",
+        "jsconfig.json",
         "app",
         "components",
         "lib",
@@ -180,19 +191,23 @@ def _normalize_scaffold_command(scaffold_cmd: str, task_dir: Path) -> str:
     if "create-next-app" not in scaffold_cmd:
         return scaffold_cmd
 
+    normalized_cmd = scaffold_cmd
+    if "--no-git" not in normalized_cmd:
+        normalized_cmd = f"{normalized_cmd} --no-git"
+
     node_major = _detect_node_major(task_dir)
     if node_major is not None and node_major < 20:
-        normalized = re.sub(r"create-next-app@[^ ]+", "create-next-app@15", scaffold_cmd)
-        if normalized == scaffold_cmd and "create-next-app@" not in scaffold_cmd:
-            normalized = scaffold_cmd.replace("create-next-app", "create-next-app@15", 1)
-        if normalized != scaffold_cmd:
+        normalized = re.sub(r"create-next-app@[^ ]+", "create-next-app@15", normalized_cmd)
+        if normalized == normalized_cmd and "create-next-app@" not in normalized_cmd:
+            normalized = normalized_cmd.replace("create-next-app", "create-next-app@15", 1)
+        if normalized != normalized_cmd:
             log_think(
                 f"Detected Node.js v{node_major}; using create-next-app@15 for runtime compatibility",
                 AGENT_NAME,
             )
         return normalized
 
-    return scaffold_cmd
+    return normalized_cmd
 
 
 def _run_scaffold_command(scaffold_cmd: str, task_dir: Path) -> tuple[str, int, str]:
@@ -1084,6 +1099,15 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             )
             _save_state(state_file, state)
             return {"action": "error", "error": "GitHub remote main branch not found"}
+
+        if not verify_remote_head_matches_local(task_dir):
+            state["status"] = "coding"
+            state["test_errors"] = (
+                "GitHub sync gate failed: remote origin/main is behind local HEAD. "
+                "Latest implementation was not pushed successfully."
+            )
+            _save_state(state_file, state)
+            return {"action": "error", "error": "GitHub remote main is behind local HEAD"}
 
         log_ok(f"All code pushed to {state.get('repo_url', 'GitHub')}", AGENT_NAME)
 

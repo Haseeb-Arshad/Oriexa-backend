@@ -301,6 +301,20 @@ def verify_remote_has_main(task_dir: Path) -> bool:
     return rc == 0 and bool(out.strip())
 
 
+def verify_remote_head_matches_local(task_dir: Path) -> bool:
+    """Return True when remote origin/main points at the current local HEAD."""
+    rc, local_head = _run(["git", "rev-parse", "HEAD"], task_dir, timeout=30)
+    if rc != 0:
+        return False
+
+    rc, remote_head = _run(["git", "ls-remote", "--heads", "origin", "main"], task_dir, timeout=30)
+    if rc != 0 or not remote_head.strip():
+        return False
+
+    remote_sha = remote_head.split()[0].strip()
+    return bool(remote_sha) and remote_sha == local_head.strip()
+
+
 def get_repo_url(task_id: int) -> str:
     """Return the expected GitHub URL for a task."""
     return f"https://github.com/{GITHUB_USERNAME}/oriexa-task-{task_id}"
