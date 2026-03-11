@@ -15,6 +15,7 @@ Usage (called by orchestrator, not directly):
 import argparse
 import json
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -46,13 +47,21 @@ from agents.git_ops import (
 from agents.shell_executor import (
     run_shell_combined,
     run_npm_install,
-    run_npx_create,
     append_build_log,
     log_command,
 )
 
 AGENT_NAME = "Coder"
 WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
+DEFAULT_NEXT_SCAFFOLD_COMMAND = (
+    "npx create-next-app@latest ./ --typescript --tailwind --eslint "
+    "--app --no-src-dir --import-alias @/* --yes --force"
+)
+NEXT15_SCAFFOLD_COMMAND = (
+    "npx create-next-app@15 ./ --typescript --tailwind --eslint "
+    "--app --no-src-dir --import-alias @/* --yes --force"
+)
+SCAFFOLD_TIMEOUT_SECONDS = int(os.environ.get("SCAFFOLD_TIMEOUT_SECONDS", "7200"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -102,6 +111,109 @@ def write_progress(
         log_warn(f"Failed to write progress: {e}", AGENT_NAME)
 
 
+def _parse_node_major(raw: str) -> int | None:
+    match = re.search(r"v(\d+)", raw or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _detect_node_major(task_dir: Path) -> int | None:
+    rc, output = run_shell_combined("node -v", task_dir, timeout=30)
+    if rc != 0:
+        return None
+    return _parse_node_major(output)
+
+
+def _looks_like_engine_mismatch(output: str) -> bool:
+    lowered = (output or "").lower()
+    return (
+        "ebadengine" in lowered
+        or "unsupported engine" in lowered
+        or "requires node" in lowered
+    )
+
+
+def _cleanup_scaffold_artifacts(task_dir: Path) -> None:
+    conflicting_files = [
+        ".build_log",
+        ".dispatch_log",
+        ".agent_lock",
+        ".implementation_plan.json",
+        ".swarm_state.json",
+        ".git",
+        ".gitignore",
+        "progress.jsonl",
+        "tsconfig.json",
+        "app",
+        "components",
+        "lib",
+        "public",
+        ".env",
+        ".env.local",
+        "node_modules",
+        "package-lock.json",
+        "package.json",
+    ]
+    for f in conflicting_files:
+        p = task_dir / f
+        if p.exists():
+            try:
+                if p.is_dir():
+                    import shutil
+                    shutil.rmtree(p)
+                else:
+                    p.unlink()
+            except Exception as e:
+                log_warn(f"Could not remove {f} before scaffold: {e}", AGENT_NAME)
+
+
+def _normalize_scaffold_command(scaffold_cmd: str, task_dir: Path) -> str:
+    if "create-next-app" not in scaffold_cmd:
+        return scaffold_cmd
+
+    node_major = _detect_node_major(task_dir)
+    if node_major is not None and node_major < 20:
+        normalized = re.sub(r"create-next-app@[^ ]+", "create-next-app@15", scaffold_cmd)
+        if normalized == scaffold_cmd and "create-next-app@" not in scaffold_cmd:
+            normalized = scaffold_cmd.replace("create-next-app", "create-next-app@15", 1)
+        if normalized != scaffold_cmd:
+            log_think(
+                f"Detected Node.js v{node_major}; using create-next-app@15 for runtime compatibility",
+                AGENT_NAME,
+            )
+        return normalized
+
+    return scaffold_cmd
+
+
+def _run_scaffold_command(scaffold_cmd: str, task_dir: Path) -> tuple[str, int, str]:
+    effective_cmd = _normalize_scaffold_command(scaffold_cmd, task_dir)
+    rc, out = run_shell_combined(effective_cmd, task_dir, timeout=SCAFFOLD_TIMEOUT_SECONDS)
+
+    if rc == 0:
+        return effective_cmd, rc, out
+
+    if _looks_like_engine_mismatch(out) and "create-next-app@15" not in effective_cmd:
+        fallback_cmd = re.sub(r"create-next-app@[^ ]+", "create-next-app@15", effective_cmd)
+        if fallback_cmd == effective_cmd and "create-next-app@" not in effective_cmd:
+            fallback_cmd = effective_cmd.replace("create-next-app", "create-next-app@15", 1)
+        if fallback_cmd != effective_cmd:
+            log_warn(
+                "Scaffold hit a Node engine mismatch; retrying with create-next-app@15",
+                AGENT_NAME,
+            )
+            append_build_log(task_dir, "Scaffold engine mismatch detected; retrying with create-next-app@15")
+            _cleanup_scaffold_artifacts(task_dir)
+            rc, out = run_shell_combined(fallback_cmd, task_dir, timeout=SCAFFOLD_TIMEOUT_SECONDS)
+            return fallback_cmd, rc, out
+
+    return effective_cmd, rc, out
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # STEP 1: PLAN — Break the task into implementation steps
 # ═══════════════════════════════════════════════════════════════════════════
@@ -127,8 +239,8 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "Given a task, you break it into implementable steps with DETAILED descriptions. "
         "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n\n"
         "CRITICAL — PROJECT TYPE RULES (STRICTLY ENFORCED):\n"
-        "- ALWAYS prioritize the latest versions of all technologies, frameworks, and tools.\n"
-        "- CRITICAL: ALWAYS use the '@latest' tag for npx/npm/pip commands and specify 'latest' for all dependency versions in package.json/requirements.txt. NEVER use specific version numbers unless absolutely necessary to fix a known bug.\n"
+        "- Prefer the latest versions of technologies that are COMPATIBLE with the installed runtime on the machine.\n"
+        "- CRITICAL: DO NOT choose package or scaffold versions that exceed the server's Node.js runtime. If Next.js latest would fail on the installed Node version, use a compatible create-next-app release instead.\n"
         "- BE PROACTIVE: If you encounter an error, version conflict, or build failure, RESOLVE IT WHATEVER IT TAKES. You are empowered to change the project structure, switch tools, or adopt a completely different technical approach to bypass the blocker.\n"
         "- You MUST ONLY use JavaScript/TypeScript frontend or fullstack frameworks.\n"
         "- DEFAULT to 'nextjs' for ALL tasks: websites, web apps, dashboards, "
@@ -143,7 +255,7 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "- NO external database connections — use in-memory state or localStorage only.\n"
         "- When in doubt: choose 'nextjs'. It is ALWAYS the safe default. The NEXTJS framework MUST be prioritized before you proceed with implementation.\n"
         "- For 'nextjs' always use scaffold_command: "
-        "'npx create-next-app@latest ./ --typescript --tailwind --eslint --app --no-src-dir --import-alias @/* --yes --force'\n\n"
+        f"'{DEFAULT_NEXT_SCAFFOLD_COMMAND}'\n\n"
         "CRITICAL — STEP DESCRIPTION RULES:\n"
         "- Each step's 'description' MUST be a DETAILED paragraph (3-5 sentences minimum) "
         "explaining exactly what to implement, the visual design, behavior, and any edge cases.\n"
@@ -175,7 +287,7 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "Return a JSON object with:\n"
         '{\n'
         '  "project_type": "nextjs" | "react" | "vite" | "static",\n'
-        '  "scaffold_command": "npx create-next-app@latest ./ --typescript --tailwind --eslint --app --no-src-dir --import-alias @/* --yes --force" or null,\n'
+        f'  "scaffold_command": "{DEFAULT_NEXT_SCAFFOLD_COMMAND}" or null,\n'
         '  "steps": [\n'
         '    {\n'
         '      "step_number": 1,\n'
@@ -199,11 +311,11 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         if project_type in ("node", "python", "express", "flask", "django", "") or project_type not in ("nextjs", "react", "vite", "static"):
             log_warn(f"Plan used forbidden project_type '{project_type}' — forcing 'nextjs'", AGENT_NAME)
             result["project_type"] = "nextjs"
-            result["scaffold_command"] = "npx create-next-app@latest ./ --typescript --tailwind --eslint --app --no-src-dir --import-alias @/* --yes --force"
+            result["scaffold_command"] = DEFAULT_NEXT_SCAFFOLD_COMMAND
 
         # Ensure scaffold command exists for nextjs
         if result.get("project_type") == "nextjs" and not result.get("scaffold_command"):
-            result["scaffold_command"] = "npx create-next-app@latest ./ --typescript --tailwind --eslint --app --no-src-dir --import-alias @/* --yes --force"
+            result["scaffold_command"] = DEFAULT_NEXT_SCAFFOLD_COMMAND
 
         # Ensure steps have file lists
         for step in result.get("steps", []):
@@ -707,7 +819,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 log_warn("Planning failed, falling back to single-step approach.", AGENT_NAME)
                 plan = {
                     "project_type": "nextjs",
-                    "scaffold_command": "npx create-next-app@latest ./ --typescript --tailwind --eslint --app --no-src-dir --import-alias @/* --yes",
+                    "scaffold_command": DEFAULT_NEXT_SCAFFOLD_COMMAND,
                     "steps": [{"step_number": 1, "description": "Complete implementation", "commit_message": "feat: complete implementation", "files": []}],
                     "test_command": "echo 'No tests defined'",
                 }
@@ -748,37 +860,10 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             # create-next-app fails if the directory is not empty.
             # We must move or remove files except state and lock.
             log_think("Cleaning up task directory for scaffolding...", AGENT_NAME)
-            conflicting_files = [
-                ".build_log",
-                ".dispatch_log",
-                ".agent_lock",
-                ".implementation_plan.json",
-                ".swarm_state.json",
-                ".git",
-                ".gitignore",
-                "progress.jsonl",
-                "tsconfig.json",
-                "app",
-                "components",
-                "lib",
-                "public",
-                ".env",
-                ".env.local",
-            ]
-            for f in conflicting_files:
-                p = task_dir / f
-                if p.exists():
-                    try:
-                        if p.is_dir():
-                            import shutil
-                            shutil.rmtree(p)
-                        else:
-                            p.unlink()
-                    except Exception as e:
-                        log_warn(f"Could not remove {f} before scaffold: {e}", AGENT_NAME)
+            _cleanup_scaffold_artifacts(task_dir)
 
-            rc, out = run_shell_combined(scaffold_cmd, task_dir, timeout=3600)
-            log_command(task_dir, scaffold_cmd, rc, out)
+            executed_cmd, rc, out = _run_scaffold_command(scaffold_cmd, task_dir)
+            log_command(task_dir, executed_cmd, rc, out)
 
             if rc == 0:
                 h = commit_step(task_dir, f"chore: scaffold project ({plan.get('project_type', 'unknown')})")

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -27,7 +29,6 @@ from agents.base_agent import (
     BASE_URL,
     OriexaClient,
     iso_to_datetime,
-    llm_call,
     llm_json,
     log_act,
     log_err,
@@ -39,6 +40,7 @@ from agents.base_agent import (
 
 AGENT_NAME = "Scout"
 MAX_REMARKS_PER_TASK = 4  # initial + follow-ups after poster answers
+SCOUT_BROWSE_LIMIT = int(os.environ.get("SCOUT_BROWSE_LIMIT", "8"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -300,16 +302,19 @@ def evaluate_task(task: dict, capabilities: list[str], conv_messages: list[dict]
 
 
 def generate_claim_message(task: dict, approach: str, capabilities: list[str]) -> str:
-    """Generate a compelling claim message."""
-    return llm_call(
-        "Write a brief, professional claim message for a freelance task. "
-        "1-3 sentences explaining why you're the right agent for this task.",
-        f"Task: {task.get('title')}\nMy approach: {approach}\n"
-        f"My skills: {', '.join(capabilities)}\n\n"
-        "Write ONLY the claim message, nothing else.",
-        max_tokens=200,
-        provider="trinity"
-    ).strip()
+    """Generate a fast deterministic claim message to avoid stale claims."""
+    cleaned_approach = re.sub(r"\s+", " ", (approach or "").strip())
+    if not cleaned_approach:
+        cleaned_approach = "build the requested frontend, test the key flows, and deliver a polished result"
+
+    focus = ", ".join(capabilities[:3]) if capabilities else "frontend implementation"
+    title = (task.get("title") or "this task").strip()
+    message = (
+        f"I can start {title} immediately. "
+        f"Plan: {cleaned_approach[:420]}. "
+        f"Primary focus: {focus}."
+    )
+    return message[:950]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -334,7 +339,7 @@ def run_scout(
         claimed_task_ids = set()
 
     log_think("Browsing for open tasks...", AGENT_NAME)
-    open_tasks = client.browse_tasks("open", limit=20)
+    open_tasks = client.browse_tasks("open", limit=SCOUT_BROWSE_LIMIT)
 
     if not open_tasks:
         log_wait("No open tasks available", AGENT_NAME)
@@ -444,6 +449,9 @@ def run_scout(
                     best_task = detail
                     best_evaluation = evaluation
                     log_think(f"  -> Good fit! confidence={evaluation.get('confidence')}, bid={evaluation.get('proposed_credits')}", AGENT_NAME)
+                    if evaluation.get("confidence") == "high":
+                        log_think(f"  -> High-confidence answered task #{task_id}; claiming without scanning the rest of the batch", AGENT_NAME)
+                        break
             elif is_claimed:
                 log_think(f"  -> Already claimed #{task_id}", AGENT_NAME)
                 attempted_tasks[task_id] = datetime.now(timezone.utc)
@@ -513,6 +521,20 @@ def run_scout(
     budget = best_task.get("budget_credits", 50)
     proposed = min(best_evaluation.get("proposed_credits", budget), budget)
     proposed = max(proposed, 10)
+
+    # Re-check freshness immediately before claiming because browse/evaluation is expensive
+    try:
+        latest = client.get_task(task_id)
+    except Exception as e:
+        log_warn(f"Failed to re-check task #{task_id} before claim: {e}", AGENT_NAME)
+        latest = None
+    if latest and latest.get("status") != "open":
+        log_warn(
+            f"Task #{task_id} changed to {latest.get('status')} before claim submission; skipping stale claim",
+            AGENT_NAME,
+        )
+        attempted_tasks[task_id] = datetime.now(timezone.utc)
+        return {"action": "stale_task", "task_id": task_id, "status": latest.get("status")}
 
     approach = best_evaluation.get("approach", "I will deliver high-quality work.")
     try:
