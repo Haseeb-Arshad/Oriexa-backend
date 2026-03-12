@@ -28,7 +28,6 @@ from agents.base_agent import (
     OriexaClient,
     llm_json,
     smart_llm_call,
-    claude_enhance_prompt,
     log_err,
     log_ok,
     log_think,
@@ -62,11 +61,11 @@ AGENT_NAME = "Coder"
 WORKSPACE_DIR = Path(os.environ.get("AGENT_WORKSPACE_DIR", str(Path(__file__).parent.parent / "agent_works")))
 DEFAULT_NEXT_SCAFFOLD_COMMAND = (
     "npx create-next-app@latest ./ --typescript --tailwind --eslint "
-    "--app --no-src-dir --import-alias @/* --yes --force --no-git"
+    "--app --no-src-dir --import-alias @/* --yes --force --no-git --skip-install"
 )
 NEXT15_SCAFFOLD_COMMAND = (
     "npx create-next-app@15 ./ --typescript --tailwind --eslint "
-    "--app --no-src-dir --import-alias @/* --yes --force --no-git"
+    "--app --no-src-dir --import-alias @/* --yes --force --no-git --skip-install"
 )
 SCAFFOLD_TIMEOUT_SECONDS = int(os.environ.get("SCAFFOLD_TIMEOUT_SECONDS", "7200"))
 
@@ -195,6 +194,8 @@ def _normalize_scaffold_command(scaffold_cmd: str, task_dir: Path) -> str:
     normalized_cmd = scaffold_cmd
     if "--no-git" not in normalized_cmd:
         normalized_cmd = f"{normalized_cmd} --no-git"
+    if "--skip-install" not in normalized_cmd:
+        normalized_cmd = f"{normalized_cmd} --skip-install"
 
     node_major = _detect_node_major(task_dir)
     if node_major is not None and node_major < 20:
@@ -479,6 +480,31 @@ def _normalize_plan(plan: dict | None, title: str, desc: str, reqs: str, past_er
         "steps": normalized_steps,
         "test_command": plan.get("test_command") or "npm run build",
     }
+
+
+def _compose_blueprint_from_plan(title: str, desc: str, reqs: str, plan: dict) -> str:
+    steps = plan.get("steps", [])
+    rendered_steps: list[str] = []
+    for step in steps:
+        files = ", ".join(
+            str(file.get("path", "")).strip()
+            for file in step.get("files", [])
+            if isinstance(file, dict) and file.get("path")
+        )
+        rendered_steps.append(
+            f"Step {step.get('step_number')}: {step.get('description', '').strip()}\n"
+            f"Files: {files or 'unspecified'}"
+        )
+
+    return (
+        f"Task title: {title}\n"
+        f"Task description: {desc}\n"
+        f"Requirements: {reqs}\n"
+        f"Project type: {plan.get('project_type', 'nextjs')}\n"
+        f"Scaffold command: {plan.get('scaffold_command') or 'none'}\n\n"
+        "Implementation blueprint:\n"
+        + "\n\n".join(rendered_steps)
+    ).strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1128,8 +1154,13 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["scaffolded"] = True
                 _save_state(state_file, state)
             else:
+                scaffold_summary = summarize_failure_output(executed_cmd, out)
                 log_warn(f"Scaffold command failed (rc={rc}). Will continue without marking scaffold complete.", AGENT_NAME)
                 append_build_log(task_dir, f"Scaffold failed (rc={rc}): {out[:800]}")
+                write_progress(task_dir, task_id, "execution", "Scaffold failed",
+                               "Project scaffold command failed before implementation could continue",
+                               scaffold_summary, 15.0,
+                               metadata={"diagnosis": scaffold_summary, "exit_code": rc})
                 # Keep scaffolded=False so a future coding retry can attempt again
                 state["scaffolded"] = False
                 _save_state(state_file, state)
@@ -1137,20 +1168,16 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         # ── STEP 4: Architectural blueprint (cached — only generate once) ─
         enhanced_blueprint = state.get("cached_blueprint", "")
         if not enhanced_blueprint:
-            log_think("Generating architectural blueprint (one-time, Claude)...", AGENT_NAME)
-            write_progress(task_dir, task_id, "planning", "Enhancing architecture blueprint",
-                           "AI is generating detailed architectural specification",
-                           "Consulting Claude for deep technical blueprint...", 18.0)
+            log_think("Synthesizing execution blueprint from the implementation plan...", AGENT_NAME)
+            write_progress(task_dir, task_id, "planning", "Preparing execution blueprint",
+                           "Turning the approved implementation plan into a coding blueprint",
+                           "Reusing the implementation plan instead of making another slow planning round-trip.", 18.0)
 
-            prompt = (
-                f"You are the Coder Agent. We are building a solution for this task:\n"
-                f"Title: {title}\nDescription: {desc}\nRequirements: {reqs}\n"
-            )
-            enhanced_blueprint = claude_enhance_prompt(prompt)
+            enhanced_blueprint = _compose_blueprint_from_plan(title, desc, reqs, plan)
             state["cached_blueprint"] = enhanced_blueprint
             _save_state(state_file, state)
         else:
-            log_think("Using cached architectural blueprint (skipping LLM call)", AGENT_NAME)
+            log_think("Using cached execution blueprint", AGENT_NAME)
 
         # Load skills — from the Oriexa skills dir AND from .claude/skills/ in both repos
         skill_contents = _load_skills_for_task(title, desc, reqs, plan)
