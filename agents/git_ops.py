@@ -166,14 +166,14 @@ def init_repo(task_dir: Path) -> bool:
     return rc == 0
 
 
-def create_github_repo(task_id: int, task_dir: Path) -> str | None:
+def create_github_repo(task_id: int, task_dir: Path, task_title: str | None = None) -> str | None:
     """
     Create a GitHub repo for the task using the GitHub REST API.
     Returns the repo URL on success, None on failure.
     Handles 'name already exists' by linking to the existing repo.
     """
     gh_token = os.environ.get("GITHUB_TOKEN", os.environ.get("GH_TOKEN", ""))
-    repo_url = expected_repo_url(task_id)
+    repo_url = expected_repo_url(task_id, task_title)
     repo_name = repo_url.rstrip("/").split("/")[-1]
     # Authenticated URL for seamless push (no credential prompts)
     auth_url = f"https://x-access-token:{gh_token}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
@@ -343,9 +343,9 @@ def verify_remote_head_matches_local(task_dir: Path) -> bool:
     return bool(remote_sha) and remote_sha == local_head.strip()
 
 
-def get_repo_url(task_id: int) -> str:
+def get_repo_url(task_id: int, task_title: str | None = None) -> str:
     """Return the expected GitHub URL for a task."""
-    return f"https://github.com/{GITHUB_USERNAME}/oriexa-task-{task_id}"
+    return expected_repo_url(task_id, task_title)
 
 
 def get_commit_count(task_dir: Path) -> int:

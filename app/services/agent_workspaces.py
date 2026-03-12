@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -77,9 +78,23 @@ def metadata_path(task_id: int, root: str | Path | None = None) -> Path:
     return metadata_dir(root) / f"task_{task_id}.json"
 
 
-def expected_repo_url(task_id: int) -> str:
+def repo_name_for_task(task_id: int, task_title: str | None = None) -> str:
+    if not task_title:
+        return f"oriexa-task-{task_id}"
+
+    slug = re.sub(r"[^a-z0-9]+", "-", task_title.lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug:
+        return f"oriexa-task-{task_id}"
+
+    suffix = f"-task-{task_id}"
+    max_slug_length = max(12, 100 - len(suffix))
+    return f"{slug[:max_slug_length].rstrip('-')}{suffix}"
+
+
+def expected_repo_url(task_id: int, task_title: str | None = None) -> str:
     github_username = os.environ.get("GITHUB_USERNAME", "Haseeb-Arshad")
-    return f"https://github.com/{github_username}/oriexa-task-{task_id}"
+    return f"https://github.com/{github_username}/{repo_name_for_task(task_id, task_title)}"
 
 
 def _parse_iso(ts: str | None) -> float | None:

@@ -20,6 +20,7 @@ import sys
 import time
 import traceback
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
 # Add parent path
@@ -68,6 +69,269 @@ VERCEL_USE_LINKED_PROJECT = os.environ.get("VERCEL_USE_LINKED_PROJECT", "").stri
     "on",
 )
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+EMOJI_RE = re.compile(r"[\U0001F1E0-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]", re.UNICODE)
+README_EXCLUDED_DIRS = {
+    ".git",
+    ".next",
+    ".vercel",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+    "coverage",
+    "venv",
+    ".venv",
+}
+
+
+def _clean_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", EMOJI_RE.sub("", (value or "")).strip())
+
+
+def _truncate_text(value: str | None, limit: int = 280) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _dedupe(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _extract_list_items(text: str | None, *, limit: int = 6) -> list[str]:
+    if not text:
+        return []
+
+    items: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.match(r"^[-*•]\s+", line):
+            items.append(re.sub(r"^[-*•]\s+", "", line).strip())
+            continue
+        if re.match(r"^\d+[.)]\s+", line):
+            items.append(re.sub(r"^\d+[.)]\s+", "", line).strip())
+
+    if items:
+        return _dedupe(items)[:limit]
+
+    normalized = re.sub(r"[\r\n]+", " ", text)
+    sentences = re.split(r"(?<=[.!?])\s+", normalized)
+    return _dedupe(_clean_text(sentence) for sentence in sentences if _clean_text(sentence))[:limit]
+
+
+def _load_json_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _detect_tech_stack(task_dir: Path) -> list[str]:
+    stack: list[str] = []
+    package_json = _load_json_file(task_dir / "package.json")
+    deps = {
+        **(package_json.get("dependencies") or {}),
+        **(package_json.get("devDependencies") or {}),
+    }
+
+    if package_json:
+        stack.append("Node.js")
+    if "next" in deps:
+        stack.append("Next.js")
+    if "react" in deps:
+        stack.append("React")
+    if "typescript" in deps:
+        stack.append("TypeScript")
+    if "tailwindcss" in deps or "@tailwindcss/postcss" in deps:
+        stack.append("Tailwind CSS")
+    if (task_dir / "pyproject.toml").exists() or (task_dir / "requirements.txt").exists():
+        stack.append("Python")
+
+    return _dedupe(stack) or ["Project-specific application stack"]
+
+
+def _detect_install_command(task_dir: Path) -> str:
+    if (task_dir / "pnpm-lock.yaml").exists():
+        return "pnpm install"
+    if (task_dir / "yarn.lock").exists():
+        return "yarn install"
+    if (task_dir / "package.json").exists():
+        return "npm install"
+    if (task_dir / "requirements.txt").exists():
+        return "pip install -r requirements.txt"
+    if (task_dir / "pyproject.toml").exists():
+        return "pip install -e ."
+    return "Review the project-specific setup files before installation."
+
+
+def _detect_run_commands(task_dir: Path) -> list[str]:
+    package_json = _load_json_file(task_dir / "package.json")
+    scripts = package_json.get("scripts") if isinstance(package_json.get("scripts"), dict) else {}
+
+    commands: list[str] = []
+    if "dev" in scripts:
+        commands.append("npm run dev")
+    if "build" in scripts:
+        commands.append("npm run build")
+    if "test" in scripts:
+        commands.append("npm test")
+    if "lint" in scripts:
+        commands.append("npm run lint")
+
+    if commands:
+        return commands
+
+    if (task_dir / "requirements.txt").exists() or (task_dir / "pyproject.toml").exists():
+        return ["python -m pytest"]
+    return []
+
+
+def _collect_project_structure(task_dir: Path, *, limit: int = 8) -> list[str]:
+    entries: list[str] = []
+    for path in sorted(task_dir.iterdir(), key=lambda item: (item.is_file(), item.name.lower())):
+        name = path.name
+        if name in README_EXCLUDED_DIRS or name.startswith("."):
+            continue
+        suffix = "/" if path.is_dir() else ""
+        entries.append(f"{name}{suffix}")
+        if len(entries) >= limit:
+            break
+    return entries
+
+
+def _collect_scope_points(state: dict, requirements: str) -> list[str]:
+    completed_steps = state.get("completed_steps") or []
+    step_points = [
+        step.get("description") or step.get("commit_message") or ""
+        for step in completed_steps
+        if isinstance(step, dict)
+    ]
+    if step_points:
+        return _dedupe(_clean_text(point) for point in step_points if _clean_text(point))[:6]
+    return _extract_list_items(requirements)
+
+
+def _render_readme(
+    *,
+    task_id: int,
+    title: str,
+    description: str,
+    requirements: str,
+    repo_url: str,
+    task_dir: Path,
+    state: dict,
+) -> str:
+    project_title = _clean_text(title) or f"Task {task_id}"
+    overview = _truncate_text(description or requirements or f"Delivery for Oriexa task #{task_id}.", 420)
+    scope_points = _collect_scope_points(state, requirements)
+    tech_stack = _detect_tech_stack(task_dir)
+    install_command = _detect_install_command(task_dir)
+    run_commands = _detect_run_commands(task_dir)
+    structure = _collect_project_structure(task_dir)
+    package_json = _load_json_file(task_dir / "package.json")
+    scripts = package_json.get("scripts") if isinstance(package_json.get("scripts"), dict) else {}
+
+    lines = [
+        f"# {project_title}",
+        "",
+        f"Professional delivery for Oriexa task #{task_id}.",
+        "",
+        "## Overview",
+        overview,
+        "",
+        "## Scope",
+    ]
+
+    if scope_points:
+        lines.extend(f"- {point}" for point in scope_points)
+    else:
+        lines.append("- Core implementation completed and prepared for deployment.")
+
+    lines.extend([
+        "",
+        "## Tech Stack",
+        *[f"- {item}" for item in tech_stack],
+        "",
+        "## Getting Started",
+        "```bash",
+        install_command,
+    ])
+
+    for command in run_commands[:3]:
+        lines.append(command)
+
+    lines.extend([
+        "```",
+        "",
+    ])
+
+    if scripts:
+        lines.append("## Available Scripts")
+        for name, command in scripts.items():
+            lines.append(f"- `{name}`: {_truncate_text(str(command), 140)}")
+        lines.append("")
+
+    if structure:
+        lines.extend([
+            "## Project Structure",
+            "```text",
+            *structure,
+            "```",
+            "",
+        ])
+
+    lines.extend([
+        "## Repository",
+        f"- GitHub: {repo_url}",
+        f"- Task ID: {task_id}",
+        "",
+        "## Notes",
+        "- This README is refreshed automatically by the deploy pipeline before Vercel deployment.",
+        "- Keep this document aligned with the shipped implementation and setup commands.",
+    ])
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def _refresh_readme(
+    task_dir: Path,
+    *,
+    task_id: int,
+    title: str,
+    description: str,
+    requirements: str,
+    repo_url: str,
+    state: dict,
+) -> bool:
+    readme_path = task_dir / "README.md"
+    content = _render_readme(
+        task_id=task_id,
+        title=title,
+        description=description,
+        requirements=requirements,
+        repo_url=repo_url,
+        task_dir=task_dir,
+        state=state,
+    )
+    previous = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
+    if previous == content:
+        return False
+    readme_path.write_text(content, encoding="utf-8")
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -290,6 +554,15 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         if state.get("status") != "deploying":
             return {"action": "no_result", "reason": f"State is {state.get('status')}, not deploying."}
 
+        task_data = {}
+        try:
+            task_data = client.get_task(task_id) or {}
+        except Exception:
+            task_data = {}
+
+        task_title = task_data.get("title") or f"Task #{task_id}"
+        task_desc = task_data.get("description") or ""
+        task_reqs = task_data.get("requirements") or ""
         repo_url = state.get("repo_url", "No Repo URL Provided")
         iterations = state.get("iterations", 1)
         append_build_log(task_dir, f"=== Deploy Agent starting for task #{task_id} ===")
@@ -319,6 +592,34 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             return fail("Missing GitHub repository URL; deployment blocked")
         if not has_meaningful_implementation(task_dir):
             return fail("No meaningful implementation files in repository; deployment blocked")
+
+        write_progress(
+            task_dir,
+            task_id,
+            "deploying",
+            "Refreshing project documentation",
+            "Updating README before deployment",
+            "Preparing professional repository documentation...",
+            95.0,
+            subtask_id=101,
+            metadata={"repo": repo_url},
+        )
+        readme_changed = _refresh_readme(
+            task_dir,
+            task_id=task_id,
+            title=task_title,
+            description=task_desc,
+            requirements=task_reqs,
+            repo_url=repo_url,
+            state=state,
+        )
+        if readme_changed:
+            h = commit_step(task_dir, "docs: refresh project README", files=["README.md"])
+            if h:
+                append_commit_log(task_dir, h, "docs: refresh project README")
+                push_to_remote(task_dir)
+                append_build_log(task_dir, f"README updated and pushed [{h}]")
+
         if not verify_remote_has_main(task_dir):
             push_to_remote(task_dir)
             if not verify_remote_has_main(task_dir):
@@ -446,14 +747,6 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         # ── Craft deliverable ─────────────────────────────────────────
         vercel_live = state.get("vercel_url")
 
-        # Fetch task details for the LLM summary
-        task_data = {}
-        try:
-            task_data = client.get_task(task_id) or {}
-        except Exception:
-            pass
-
-        task_title = task_data.get("title") or f"Task #{task_id}"
         task_desc = (task_data.get("description") or "")[:600]
         task_reqs = (task_data.get("requirements") or "")[:400]
 

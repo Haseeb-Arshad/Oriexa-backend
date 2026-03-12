@@ -1084,7 +1084,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         if not init_repo(task_dir):
             return {"action": "error", "error": "Failed to initialize git repo."}
 
-        repo_url = create_github_repo(task_id, task_dir)
+        repo_url = create_github_repo(task_id, task_dir, title)
         if repo_url:
             log_ok(f"GitHub repo ready: {repo_url}", AGENT_NAME)
             state["repo_url"] = repo_url
