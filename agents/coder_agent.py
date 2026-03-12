@@ -68,6 +68,7 @@ NEXT15_SCAFFOLD_COMMAND = (
     "--app --no-src-dir --import-alias @/* --yes --force --no-git --skip-install"
 )
 SCAFFOLD_TIMEOUT_SECONDS = int(os.environ.get("SCAFFOLD_TIMEOUT_SECONDS", "7200"))
+MAX_CODING_ITERATIONS = int(os.environ.get("MAX_CODING_ITERATIONS", "12"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -881,6 +882,8 @@ def _fix_build_errors(
     """
     import re
 
+    lowered_error = error_output.lower()
+
     # Extract file paths mentioned in the error output
     error_files: set[str] = set()
     # Match common error patterns: "./app/page.tsx(12,5):" or "Error in app/page.tsx" or "./app/page.tsx:12:5"
@@ -893,6 +896,40 @@ def _fix_build_errors(
             fpath = match.group(1).lstrip('./')
             if fpath and not fpath.startswith('node_modules') and '.' in fpath:
                 error_files.add(fpath)
+
+    compatibility_markers = (
+        "npm install",
+        "package.json",
+        "dependency",
+        "module not found",
+        "cannot find module",
+        "unsupported engine",
+        "ebadengine",
+        "next build",
+        "turbopack",
+        "webpack is configured while turbopack is not",
+        "lightningcss",
+        "tailwind",
+        "postcss",
+    )
+    compatibility_candidates = [
+        "package.json",
+        "next.config.js",
+        "next.config.mjs",
+        "postcss.config.js",
+        "postcss.config.mjs",
+        "tailwind.config.js",
+        "tailwind.config.ts",
+        "tsconfig.json",
+        "app/globals.css",
+        "src/app/globals.css",
+        "app/page.tsx",
+        "src/app/page.tsx",
+    ]
+    if any(marker in lowered_error for marker in compatibility_markers):
+        for candidate in compatibility_candidates:
+            if (task_dir / candidate).exists():
+                error_files.add(candidate)
 
     if not error_files:
         # Fallback: if we can't parse specific files, fix the main entry points
@@ -922,6 +959,11 @@ def _fix_build_errors(
         "You will receive error output and the current source files. "
         "Fix ONLY the errors — do NOT rewrite files from scratch. "
         "Keep all existing functionality intact. Only modify what's broken. "
+        "If the failure is caused by incompatible dependencies, build tooling, or configuration, "
+        "you MAY modify package.json, build scripts, Next.js config, PostCSS/Tailwind config, "
+        "or replace/remove the failing library and implement the feature with a simpler compatible approach. "
+        "Prefer stable, production-safe dependencies and configurations over experimental or Node-incompatible ones. "
+        "Never keep the same broken dependency or build flag if it is still causing the failure. "
         "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n"
         "Return: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n"
         "Each file must have the COMPLETE corrected source code."
@@ -938,6 +980,12 @@ def _fix_build_errors(
         f"ERROR OUTPUT:\n{error_output[-3000:]}\n\n"
         f"CURRENT FILES:\n{files_section}\n\n"
         f"Task: {title}\nDescription: {desc[:500]}\n\n"
+        "Repair policy:\n"
+        "- Do not stop at diagnosis only; return concrete file changes.\n"
+        "- If a package or library is incompatible with the runtime or build toolchain, replace it or remove it.\n"
+        "- If Turbopack or a cutting-edge build path is failing, prefer the stable compatible build path.\n"
+        "- If a dependency requires a newer Node version than the worker provides, downgrade or swap it.\n"
+        "- Simplify the implementation if that is the fastest path to a passing install/build/test.\n\n"
         "Return the corrected files as JSON: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n"
         "IMPORTANT: Only return files that need changes. Keep all existing code intact. "
         "Fix the specific errors shown above."
@@ -949,6 +997,20 @@ def _fix_build_errors(
         f for f in files
         if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20
     ]
+
+    if not valid_files:
+        log_warn("Fix-only mode returned no valid files. Retrying with compatibility-first fallback.", AGENT_NAME)
+        fallback_user = (
+            user
+            + "\n\nFallback mode: you must return at least one changed file. "
+              "If the current stack is incompatible, edit package.json and the relevant config files to switch to a compatible approach."
+        )
+        result = llm_json(system, fallback_user, max_tokens=16384, complexity="extreme")
+        files = result.get("files", []) if isinstance(result, dict) else []
+        valid_files = [
+            f for f in files
+            if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20
+        ]
 
     if not valid_files and "_raw" in result:
         debug_file = task_dir / ".llm_debug_fix.txt"
@@ -998,21 +1060,25 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             state = _reset_corrupt_workspace(task_dir, state, integrity_issues)
             _save_state(state_file, state)
 
-        # Hard retry cap: block deployment instead of force-advancing bad code.
-        MAX_CODING_ITERATIONS = 5
         iteration = state.get("iterations", 0)
         if iteration >= MAX_CODING_ITERATIONS:
             log_warn(
-                f"Hit max coding iterations ({MAX_CODING_ITERATIONS}). "
-                "Blocking further advancement until implementation is fixed.",
+                f"Soft coding iteration limit reached ({iteration}/{MAX_CODING_ITERATIONS}). "
+                "Continuing with compatibility-first recovery instead of stopping.",
                 AGENT_NAME,
             )
-            state["status"] = "coding"
-            state["test_errors"] = (
-                "Max coding iterations reached. Deployment blocked until meaningful implementation succeeds."
+            state["repair_strategy"] = "compatibility-first-recovery"
+            write_progress(
+                task_dir,
+                task_id,
+                "execution",
+                "Escalating repair strategy",
+                "Multiple coding attempts have already run; switching to compatibility-first recovery instead of stopping.",
+                "Prefer replacing incompatible libraries, configs, or build flags over repeating the same fix.",
+                18.0,
+                metadata={"iteration": iteration, "soft_limit": MAX_CODING_ITERATIONS},
             )
             _save_state(state_file, state)
-            return {"action": "error", "task_id": task_id, "error": "max_coding_iterations_reached"}
 
         # Recover from stale state snapshots that mark steps complete with no code.
         if state.get("completed_steps") and not has_meaningful_implementation(task_dir):
@@ -1038,7 +1104,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         # Iteration 1: high (same model, targeted fix)
         # Iteration 2+: extreme (upgrade to best available model)
         plan_complexity = "high"
-        if iteration >= 2:
+        if iteration >= 2 or state.get("repair_strategy") == "compatibility-first-recovery":
             log_warn(f"Escalating to 'extreme' intelligence (iteration {iteration})", AGENT_NAME)
             plan_complexity = "extreme"
 

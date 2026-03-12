@@ -298,6 +298,38 @@ def summarize_failure_output(command: str, output: str) -> str:
         parts.append("Align the package versions in package.json before retrying.")
         return " ".join(parts)
 
+    if "unsupported engine" in lowered or "ebadengine" in lowered:
+        package = _line_containing("package:")
+        required = _line_containing("required:")
+        current = _line_containing("current:")
+        parts = ["Node runtime is incompatible with one or more installed packages."]
+        if package:
+            parts.append(package)
+        if required:
+            parts.append(required)
+        if current:
+            parts.append(current)
+        parts.append("Downgrade or replace the package, or align the runtime version before retrying.")
+        return " ".join(parts)
+
+    if "webpack is configured while turbopack is not" in lowered:
+        return (
+            "Build is running with Turbopack while the project still has webpack-specific config. "
+            "Remove the `--turbopack` build flag, add matching Turbopack config, or fall back to the stable webpack build."
+        )
+
+    if "lightningcss/node/index.js" in lowered:
+        return (
+            "Lightning CSS failed to load during the Next.js build. "
+            "This usually points to a Node or Turbopack toolchain mismatch; align dependency versions or use the stable non-Turbopack build path."
+        )
+
+    if "turbopack build failed" in lowered and "module not found" in lowered:
+        return (
+            "Turbopack failed on a missing module or incompatible toolchain. "
+            "Fix or remove the import, or switch the build back to the stable webpack path before retrying."
+        )
+
     module_match = _match(r"Cannot find module ['\"]([^'\"]+)['\"]")
     if module_match:
         missing_module = module_match.group(1)
