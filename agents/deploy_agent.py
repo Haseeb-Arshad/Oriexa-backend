@@ -70,32 +70,6 @@ VERCEL_USE_LINKED_PROJECT = os.environ.get("VERCEL_USE_LINKED_PROJECT", "").stri
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def _detect_personal_vercel_scope(task_dir: Path, env: dict[str, str]) -> str:
-    """Best-effort detect username for fallback unlinked public deploys."""
-    try:
-        proc = subprocess.run(
-            ["vercel", "whoami", f"--token={VERCEL_TOKEN}"],
-            cwd=str(task_dir),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=env,
-        )
-        output = (proc.stdout + "\n" + proc.stderr).strip()
-        output = ANSI_ESCAPE_RE.sub("", output)
-        if proc.returncode == 0:
-            for raw in output.splitlines():
-                line = raw.strip()
-                if not line or line.lower().startswith("vercel cli"):
-                    continue
-                if " " in line:
-                    continue
-                return line
-    except Exception:
-        pass
-    return ""
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # VERCEL DEPLOYMENT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -159,8 +133,6 @@ def run_vercel_deploy(
         return proc.returncode, clean_output
 
     fallback_scope = VERCEL_PUBLIC_SCOPE
-    if force_unlinked and not fallback_scope:
-        fallback_scope = _detect_personal_vercel_scope(task_dir, env)
 
     try:
         rc, _ = _run(["vercel", "--version"], timeout=30)
@@ -210,6 +182,14 @@ def run_vercel_deploy(
         rc, out = _run(cmd, timeout=900 if i == 1 else 600)
         last_output = out
         if rc != 0:
+            personal_scope_error = "you cannot set your personal account as the scope" in out.lower()
+            if personal_scope_error and any(part.startswith("--scope=") for part in cmd):
+                retry_cmd = [part for part in cmd if not part.startswith("--scope=")]
+                append_build_log(task_dir, "Vercel rejected personal-account scope; retrying without --scope.")
+                rc, out = _run(retry_cmd, timeout=900 if i == 1 else 600)
+                last_output = out
+                if rc == 0:
+                    continue
             if i == 0 and not use_linked_project and "pull" in cmd:
                 log_warn("vercel pull failed in unlinked mode; continuing with build/deploy.", AGENT_NAME)
                 continue
