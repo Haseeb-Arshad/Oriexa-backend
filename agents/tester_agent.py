@@ -40,6 +40,7 @@ from agents.shell_executor import (
     run_tests,
     append_build_log,
     log_command,
+    summarize_failure_output,
 )
 from app.services.agent_workspaces import (
     ensure_local_workspace,
@@ -147,7 +148,12 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             rc, out = run_npm_install(task_dir)
             log_command(task_dir, "npm install", rc, out)
             if rc != 0:
+                install_summary = summarize_failure_output("npm install", out)
                 log_warn(f"npm install failed (rc={rc}). Attempting to proceed.", AGENT_NAME)
+                write_progress(task_dir, task_id, "testing", "Dependency install failed",
+                               "npm install failed before test execution; continuing so the failure can be diagnosed",
+                               install_summary, 84.0, subtask_id=100,
+                               metadata={"diagnosis": install_summary, "exit_code": rc})
 
         if (task_dir / "requirements.txt").exists():
             log_think("Installing pip dependencies...", AGENT_NAME)
@@ -185,6 +191,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 log_command(task_dir, "npm run build", build_rc, build_out)
 
                 if build_rc != 0:
+                    build_summary = summarize_failure_output("npm run build", build_out)
                     test_iteration = state.get("test_iteration", 0)
                     MAX_TEST_RETRIES = 3
 
@@ -196,10 +203,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                         )
                         state["status"] = "coding"
                         state["test_errors"] = (
-                            "BUILD FAILED after max retries. Do not deploy.\n"
+                            f"BUILD FAILED after max retries. Do not deploy.\nDiagnosis: {build_summary}\n\n"
                             + (build_out[-2000:] if len(build_out) > 2000 else build_out)
                         )
                         state["test_iteration"] = test_iteration + 1
+                        write_progress(task_dir, task_id, "testing", "Build failed",
+                                       "Build still failing after repeated retries; deployment is blocked",
+                                       build_summary, 88.0, subtask_id=100,
+                                       metadata={"diagnosis": build_summary, "exit_code": build_rc, "retry": test_iteration + 1})
                         write_swarm_state(task_id, state, workspace_dir=task_dir)
                         h = commit_step(task_dir, f"build: failed (attempt {test_iteration + 1}) - deployment blocked")
                         if h:
@@ -208,9 +219,13 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                         return {"action": "tested", "task_id": task_id, "passed": False, "reason": "build_failed_max_retries"}
                     else:
                         log_warn(f"Build FAILED (rc={build_rc}, attempt {test_iteration + 1}/{MAX_TEST_RETRIES}). Looping back to Coder for targeted fix.", AGENT_NAME)
+                        write_progress(task_dir, task_id, "testing", "Build failed — returning to coder",
+                                       "Production build failed; the coder is being sent back with a targeted diagnosis",
+                                       build_summary, 88.0, subtask_id=100,
+                                       metadata={"diagnosis": build_summary, "exit_code": build_rc, "retry": test_iteration + 1})
                         state["status"] = "coding"
                         state["test_errors"] = (
-                            f"BUILD FAILED — fix these errors before tests can run:\n"
+                            f"BUILD FAILED — fix these errors before tests can run:\nDiagnosis: {build_summary}\n\n"
                             f"{build_out[-2000:] if len(build_out) > 2000 else build_out}"
                         )
                         state["test_iteration"] = test_iteration + 1
@@ -284,6 +299,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
 
         else:
             limited_out = output[-2000:] if len(output) > 2000 else output
+            test_summary = summarize_failure_output(test_command, output)
             test_iteration = state.get("test_iteration", 0)
             MAX_TEST_RETRIES = 3
 
@@ -295,10 +311,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 )
                 state["status"] = "coding"
                 state["test_errors"] = (
-                    f"TESTS FAILED after max retries (command: {test_command}, exit: {rc}).\n"
+                    f"TESTS FAILED after max retries (command: {test_command}, exit: {rc}).\nDiagnosis: {test_summary}\n\n"
                     + limited_out
                 )
                 state["test_iteration"] = test_iteration + 1
+                write_progress(task_dir, task_id, "testing", "Tests failed",
+                               "Tests are still failing after repeated retries; deployment is blocked",
+                               test_summary, 90.0, subtask_id=100,
+                               metadata={"diagnosis": test_summary, "exit_code": rc, "retry": test_iteration + 1})
 
                 h = commit_step(task_dir, f"test: failing (attempt {test_iteration + 1}) - deployment blocked")
                 if h:
@@ -309,11 +329,13 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 log_warn(f"Tests FAILED (exit code {rc}, attempt {test_iteration + 1}/{MAX_TEST_RETRIES}). Looping back to Coder for targeted fix.", AGENT_NAME)
                 write_progress(task_dir, task_id, "testing", "Tests failed — retrying",
                                "Tests failed, returning to Coder agent to fix errors",
-                               limited_out[:500], 90.0, subtask_id=100,
-                               metadata={"exit_code": rc})
+                               test_summary, 90.0, subtask_id=100,
+                               metadata={"diagnosis": test_summary, "exit_code": rc, "retry": test_iteration + 1})
 
                 state["status"] = "coding"
-                state["test_errors"] = f"Command: {test_command}\nExit code: {rc}\nOutput:\n{limited_out}"
+                state["test_errors"] = (
+                    f"Command: {test_command}\nExit code: {rc}\nDiagnosis: {test_summary}\nOutput:\n{limited_out}"
+                )
                 state["test_iteration"] = test_iteration + 1
 
                 h = commit_step(task_dir, f"test: failing — exit code {rc}")

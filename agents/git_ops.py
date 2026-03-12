@@ -37,7 +37,9 @@ HOUSEKEEPING_FILES = {
     ".test_results.json",
     ".deploy_results.json",
     "progress.jsonl",
+    ".implementation_plan.json",
 }
+HOUSEKEEPING_PREFIXES = (".llm_debug_",)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -57,6 +59,34 @@ def _run(cmd: list[str], cwd: Path, timeout: int = 60) -> tuple[int, str]:
         return -1, f"Command timed out after {timeout}s: {' '.join(cmd)}"
     except Exception as e:
         return -1, str(e)
+
+
+def _normalize_repo_path(path: str) -> str:
+    return path.replace("\\", "/").strip().strip('"')
+
+
+def _is_housekeeping_path(path: str) -> bool:
+    normalized = _normalize_repo_path(path)
+    if not normalized or normalized.startswith(".git/"):
+        return True
+    if normalized in HOUSEKEEPING_FILES:
+        return True
+    name = normalized.rsplit("/", 1)[-1]
+    return any(name.startswith(prefix) for prefix in HOUSEKEEPING_PREFIXES)
+
+
+def _extract_meaningful_paths(status_output: str) -> list[str]:
+    paths: list[str] = []
+    for line in status_output.splitlines():
+        entry = line[3:].strip() if len(line) >= 4 else line.strip()
+        if not entry:
+            continue
+        if " -> " in entry:
+            entry = entry.split(" -> ", 1)[1].strip()
+        normalized = _normalize_repo_path(entry)
+        if normalized and not _is_housekeeping_path(normalized):
+            paths.append(normalized)
+    return paths
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -247,6 +277,8 @@ def commit_step(
     rc, status = _run(["git", "status", "--porcelain"], task_dir)
     if not status.strip():
         return None  # Nothing to commit
+    if not _extract_meaningful_paths(status):
+        return None
 
     # Commit
     rc, out = _run(["git", "commit", "-m", message], task_dir)
@@ -283,12 +315,8 @@ def has_meaningful_implementation(task_dir: Path) -> bool:
     tracked = [line.strip() for line in out.splitlines() if line.strip()]
     meaningful = []
     for rel in tracked:
-        p = rel.replace("\\", "/").strip()
-        if not p:
-            continue
-        if p.startswith(".git/"):
-            continue
-        if p in HOUSEKEEPING_FILES:
+        p = _normalize_repo_path(rel)
+        if not p or _is_housekeeping_path(p):
             continue
         meaningful.append(p)
 

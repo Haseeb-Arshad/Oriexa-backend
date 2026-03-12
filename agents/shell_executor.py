@@ -271,6 +271,94 @@ def run_tests(
     return rc, output
 
 
+def summarize_failure_output(command: str, output: str) -> str:
+    """Return a short, actionable diagnosis for a failed shell command."""
+    text = (output or "").replace("\r\n", "\n")
+    compact_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lowered = text.lower()
+
+    def _match(pattern: str) -> re.Match[str] | None:
+        return re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+
+    def _line_containing(snippet: str) -> str | None:
+        snippet_lower = snippet.lower()
+        for line in compact_lines:
+            if snippet_lower in line.lower():
+                return line
+        return None
+
+    if "eresolve unable to resolve dependency tree" in lowered:
+        found = _line_containing("found:")
+        missing = _line_containing("could not resolve dependency:")
+        parts = ["Dependency resolution failed during npm install."]
+        if found:
+            parts.append(found)
+        if missing:
+            parts.append(missing)
+        parts.append("Align the package versions in package.json before retrying.")
+        return " ".join(parts)
+
+    module_match = _match(r"Cannot find module ['\"]([^'\"]+)['\"]")
+    if module_match:
+        missing_module = module_match.group(1)
+        importer = _line_containing("Require stack:")
+        parts = [f"Missing dependency or import: `{missing_module}`."]
+        if importer:
+            parts.append(importer)
+        parts.append("Add the package or remove the broken import, then rebuild.")
+        return " ".join(parts)
+
+    package_match = _match(r"Module not found:.*?[\"']([^\"']+)[\"']")
+    if package_match:
+        missing_package = package_match.group(1)
+        return (
+            f"Bundler could not resolve `{missing_package}`. "
+            "Install it or fix the import path before retrying."
+        )
+
+    file_match = _match(r"(\.?/?[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)[(:]\d+")
+    if file_match:
+        file_path = file_match.group(1).lstrip("./")
+        error_line = next(
+            (
+                line
+                for line in compact_lines
+                if "error" in line.lower() or "failed" in line.lower()
+            ),
+            None,
+        )
+        if error_line:
+            return f"Build error in `{file_path}`. {error_line}"
+        return f"Build or test output points to `{file_path}` as the likely source of failure."
+
+    if "next: not found" in lowered:
+        return (
+            "The `next` binary is unavailable, which usually means `npm install` did not complete "
+            "or Next.js is missing from dependencies."
+        )
+
+    if "command timed out" in lowered:
+        return f"`{command}` timed out. The agent should inspect the hanging step before retrying."
+
+    priority_markers = (
+        "npm ERR!",
+        "Error:",
+        "ERROR:",
+        "Failed to compile.",
+        "Build failed",
+        "Tests failed",
+    )
+    for marker in priority_markers:
+        matched = _line_containing(marker)
+        if matched:
+            return matched
+
+    if compact_lines:
+        return compact_lines[-1]
+
+    return f"`{command}` failed without any captured diagnostic output."
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # BUILD LOG
 # ═══════════════════════════════════════════════════════════════════════════
@@ -287,4 +375,7 @@ def log_command(task_dir: Path, cmd: str, rc: int, output: str):
     """Log a command execution to the build log."""
     status = "OK" if rc == 0 else f"FAIL(rc={rc})"
     trimmed = output[:500] if len(output) > 500 else output
-    append_build_log(task_dir, f"{status} $ {cmd}\n{trimmed}")
+    log_entry = f"{status} $ {cmd}\n{trimmed}"
+    if rc != 0:
+        log_entry += f"\nDiagnosis: {summarize_failure_output(cmd, output)}"
+    append_build_log(task_dir, log_entry)

@@ -50,6 +50,7 @@ from agents.shell_executor import (
     run_npm_install,
     append_build_log,
     log_command,
+    summarize_failure_output,
 )
 from app.services.agent_workspaces import (
     ensure_local_workspace,
@@ -306,6 +307,180 @@ def _reset_corrupt_workspace(task_dir: Path, state: dict, issues: list[str]) -> 
     return state
 
 
+GENERIC_STEP_PATTERNS = (
+    "complete implementation",
+    "implement the task",
+    "finish the app",
+    "build the project",
+)
+
+
+def _summarize_focus(*parts: str, max_words: int = 8) -> str:
+    text = " ".join(part.strip() for part in parts if part).strip()
+    if not text:
+        return "the requested experience"
+    sentence = re.split(r"[.!?\n]", text, maxsplit=1)[0]
+    sentence = re.sub(
+        r"^(create|build|implement|design|develop|set up|setup|finish|complete)\s+",
+        "",
+        sentence,
+        flags=re.IGNORECASE,
+    )
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", sentence)
+    if not words:
+        return "the requested experience"
+    return " ".join(words[:max_words]).lower()
+
+
+def _is_generic_step_description(description: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (description or "").strip()).lower()
+    if not normalized:
+        return True
+    if any(pattern in normalized for pattern in GENERIC_STEP_PATTERNS):
+        return True
+    return len(normalized.split()) < 6
+
+
+def _derive_commit_message(
+    proposed: str | None,
+    step_desc: str,
+    files: list[dict] | None = None,
+) -> str:
+    normalized = re.sub(r"\s+", " ", (proposed or "").strip())
+    if normalized and not _is_generic_step_description(normalized.replace("feat:", "").replace("fix:", "")):
+        return normalized
+
+    file_paths = [str(f.get("path", "")).replace("\\", "/") for f in (files or []) if isinstance(f, dict)]
+    focus = _summarize_focus(step_desc)
+
+    if any(path.endswith(("package.json", "tsconfig.json", "next.config.ts", "next.config.js")) for path in file_paths):
+        return "chore: configure compatible project foundation"
+    if any(path.endswith(("app/layout.tsx", "app/globals.css")) for path in file_paths):
+        return "feat: establish application shell"
+    if any(path.endswith(("app/page.tsx", "pages/index.tsx")) for path in file_paths):
+        return f"feat: build {focus}"
+    if any("/components/" in f"/{path}" or path.startswith("components/") for path in file_paths):
+        return f"feat: add UI for {focus}"
+    if "fix" in step_desc.lower() or "error" in step_desc.lower():
+        return f"fix: resolve {focus}"
+    return f"feat: implement {focus}"
+
+
+def _build_fallback_plan(title: str, desc: str, reqs: str, past_errors: str = "") -> dict:
+    focus = _summarize_focus(title, desc, reqs)
+    error_hint = ""
+    if past_errors:
+        error_hint = (
+            " Account for the latest failure context while choosing dependency versions, imports, "
+            "and build tooling so the next test pass does not repeat the same blocker."
+        )
+    return {
+        "project_type": "nextjs",
+        "scaffold_command": DEFAULT_NEXT_SCAFFOLD_COMMAND,
+        "steps": [
+            {
+                "step_number": 1,
+                "description": (
+                    f"Establish a compatible Next.js foundation for {focus}. Create the root layout, "
+                    "global styling primitives, and any package or config updates required for a clean "
+                    "install and production build. Make the app shell responsive and production-ready so "
+                    "later feature work lands on stable scaffolding."
+                    f"{error_hint}"
+                ),
+                "commit_message": "chore: configure compatible project foundation",
+                "files": [
+                    {"path": "app/layout.tsx", "description": "Application shell, metadata, and shared layout structure."},
+                    {"path": "app/globals.css", "description": "Global design tokens, layout rules, and responsive styling baseline."},
+                ],
+            },
+            {
+                "step_number": 2,
+                "description": (
+                    f"Implement the main {focus} experience in the primary page and supporting components. "
+                    "Translate the task requirements into concrete UI sections, data presentation, and user "
+                    "interactions instead of generic placeholder content. Ensure the page reflects the task's "
+                    "actual workflows, edge states, and visual hierarchy."
+                ),
+                "commit_message": f"feat: build {focus}",
+                "files": [
+                    {"path": "app/page.tsx", "description": "Primary user-facing page implementing the task's main workflow."},
+                    {"path": "components/MainExperience.tsx", "description": "Reusable UI component(s) backing the page experience."},
+                ],
+            },
+            {
+                "step_number": 3,
+                "description": (
+                    "Harden the implementation for autonomous delivery. Add any supporting helpers, polish incomplete "
+                    "states, and remove fragile dependencies or imports that would break npm install or npm run build. "
+                    "Finish with production-focused cleanup so the tester sees clear progress and a stable build."
+                ),
+                "commit_message": "fix: harden production flow and build stability",
+                "files": [
+                    {"path": "components/StatusPanel.tsx", "description": "Support component for empty, error, or completion states."},
+                    {"path": "lib/mock-data.ts", "description": "Supporting data or helpers required to keep the UI self-contained."},
+                ],
+            },
+        ],
+        "test_command": "npm run build",
+    }
+
+
+def _normalize_plan(plan: dict | None, title: str, desc: str, reqs: str, past_errors: str = "") -> dict:
+    if not isinstance(plan, dict):
+        return _build_fallback_plan(title, desc, reqs, past_errors)
+
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return _build_fallback_plan(title, desc, reqs, past_errors)
+
+    generic_count = sum(
+        1
+        for step in steps
+        if _is_generic_step_description(str(step.get("description", "")))
+    )
+    if len(steps) < 2 or generic_count == len(steps):
+        return _build_fallback_plan(title, desc, reqs, past_errors)
+
+    normalized_steps: list[dict] = []
+    for idx, raw_step in enumerate(steps, start=1):
+        step = dict(raw_step or {})
+        files = step.get("files")
+        if not isinstance(files, list) or not files:
+            files = [
+                {"path": "app/page.tsx", "description": "Primary page implementing the planned user flow."},
+                {"path": f"components/Step{idx}Panel.tsx", "description": "Supporting component for this implementation step."},
+            ]
+        step_desc = str(step.get("description") or "").strip()
+        if _is_generic_step_description(step_desc):
+            focus = _summarize_focus(title, desc, reqs)
+            step_desc = (
+                f"Implement a concrete slice of {focus} for step {idx}. Focus on real user-facing behavior, "
+                "wire the listed files together, and avoid placeholder code so the output is testable and ready "
+                "for the next build pass."
+            )
+
+        step["step_number"] = idx
+        step["description"] = step_desc
+        step["files"] = files
+        step["commit_message"] = _derive_commit_message(step.get("commit_message"), step_desc, files)
+        normalized_steps.append(step)
+
+    project_type = str(plan.get("project_type") or "nextjs").lower().strip()
+    if project_type not in {"nextjs", "react", "vite", "static"}:
+        project_type = "nextjs"
+
+    scaffold_command = plan.get("scaffold_command")
+    if project_type == "nextjs":
+        scaffold_command = scaffold_command or DEFAULT_NEXT_SCAFFOLD_COMMAND
+
+    return {
+        "project_type": project_type,
+        "scaffold_command": scaffold_command,
+        "steps": normalized_steps,
+        "test_command": plan.get("test_command") or "npm run build",
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # STEP 1: PLAN — Break the task into implementation steps
 # ═══════════════════════════════════════════════════════════════════════════
@@ -400,30 +575,7 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
     )
 
     result = llm_json(system, user, max_tokens=2048, complexity=complexity, provider="claude-sonnet")
-
-    # ── Post-processing: enforce project type and scaffold ──
-    if isinstance(result, dict):
-        project_type = (result.get("project_type") or "").lower().strip()
-        # Force nextjs for forbidden types
-        if project_type in ("node", "python", "express", "flask", "django", "") or project_type not in ("nextjs", "react", "vite", "static"):
-            log_warn(f"Plan used forbidden project_type '{project_type}' — forcing 'nextjs'", AGENT_NAME)
-            result["project_type"] = "nextjs"
-            result["scaffold_command"] = DEFAULT_NEXT_SCAFFOLD_COMMAND
-
-        # Ensure scaffold command exists for nextjs
-        if result.get("project_type") == "nextjs" and not result.get("scaffold_command"):
-            result["scaffold_command"] = DEFAULT_NEXT_SCAFFOLD_COMMAND
-
-        # Ensure steps have file lists
-        for step in result.get("steps", []):
-            if not step.get("files"):
-                step_desc = step.get("description", "implementation")
-                step["files"] = [
-                    {"path": f"app/page.tsx", "description": f"Main page for: {step_desc}"},
-                    {"path": f"components/{step_desc.replace(' ', '')}.tsx", "description": f"Component for: {step_desc}"},
-                ]
-
-    return result
+    return _normalize_plan(result, title, desc, reqs, past_errors)
 
 
 def generate_step_code(
@@ -923,35 +1075,30 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             # Always use claude-sonnet for the plan — this only runs once
             plan = plan_implementation(title, desc, reqs, "", poster_context, complexity="high")
             if not plan or not plan.get("steps"):
-                log_warn("Planning failed, falling back to single-step approach.", AGENT_NAME)
-                plan = {
-                    "project_type": "nextjs",
-                    "scaffold_command": DEFAULT_NEXT_SCAFFOLD_COMMAND,
-                    "steps": [{"step_number": 1, "description": "Complete implementation", "commit_message": "feat: complete implementation", "files": []}],
-                    "test_command": "echo 'No tests defined'",
-                }
+                log_warn("Planning failed, falling back to deterministic multi-step plan.", AGENT_NAME)
+                plan = _build_fallback_plan(title, desc, reqs)
 
             state["plan"] = plan
             state["total_steps"] = len(plan.get("steps", []))
             state["test_command"] = plan.get("test_command", "echo 'No tests defined'")
             _save_state(state_file, state)
 
-            # Commit the plan
             plan_file = task_dir / ".implementation_plan.json"
             plan_file.write_text(json.dumps(plan, indent=2), encoding="utf-8")
-            h = commit_step(task_dir, "docs: add implementation plan")
-            if h:
-                append_commit_log(task_dir, h, "docs: add implementation plan")
-                log_ok(f"Committed implementation plan [{h}]", AGENT_NAME)
 
             total = len(plan.get("steps", []))
             step_names = [s.get("description", f"Step {s.get('step_number', i+1)}") for i, s in enumerate(plan.get("steps", []))]
             write_progress(task_dir, task_id, "planning", "Implementation plan ready",
                            f"{total} steps planned: {' → '.join(step_names[:4])}{'...' if total > 4 else ''}",
                            f"Project type: {plan.get('project_type', 'unknown')}, {total} implementation steps",
-                           10.0, metadata={"steps": total, "project_type": plan.get("project_type", "unknown")})
+                           10.0, metadata={"steps": total, "project_type": plan.get("project_type", "unknown"), "subtasks": step_names})
         else:
-            plan = state["plan"]
+            plan = _normalize_plan(state["plan"], title, desc, reqs, past_errors)
+            if plan != state["plan"]:
+                state["plan"] = plan
+                state["total_steps"] = len(plan.get("steps", []))
+                state["test_command"] = plan.get("test_command", state.get("test_command", "npm run build"))
+                _save_state(state_file, state)
             log_think(f"Resuming plan — {len(state.get('completed_steps', []))} of {state['total_steps']} steps done.", AGENT_NAME)
 
         # ── STEP 3: Scaffold (if needed) ──────────────────────────────
@@ -1020,10 +1167,12 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         # ── FIX-ONLY MODE: If we have test_errors AND all steps are done,
         #    only fix the broken files instead of regenerating everything.
         if past_errors and len(completed_step_nums) == len(steps) and len(completed_step_nums) > 0:
+            failure_summary = summarize_failure_output("build/test verification", past_errors)
             log_think(f"Fix-only mode: all {len(steps)} steps already completed. Fixing build errors...", AGENT_NAME)
             write_progress(task_dir, task_id, "execution", "Fixing build errors",
                            "Targeted fix — only rewriting files with errors",
-                           "Analyzing error output to identify broken files...", 75.0)
+                           failure_summary, 75.0,
+                           metadata={"diagnosis": failure_summary, "iteration": iteration + 1})
 
             fix_files = _fix_build_errors(
                 past_errors, title, desc, reqs, enhanced_blueprint,
@@ -1039,9 +1188,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     files_written.append(f["path"])
 
                 log_ok(f"Fixed {len(files_written)} files: {', '.join(files_written[:5])}", AGENT_NAME)
-                h = commit_step(task_dir, f"fix: resolve build errors (iteration {iteration + 1})")
+                fix_commit = _derive_commit_message(
+                    f"fix: resolve build errors iteration {iteration + 1}",
+                    failure_summary,
+                    [{"path": path} for path in files_written],
+                )
+                h = commit_step(task_dir, fix_commit)
                 if h:
-                    append_commit_log(task_dir, h, "fix: resolve build errors")
+                    append_commit_log(task_dir, h, fix_commit)
                     push_to_remote(task_dir)
                     log_ok(f"Fix committed [{h}] and pushed", AGENT_NAME)
             else:
@@ -1066,7 +1220,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     continue  # Already done
 
                 step_desc = step.get("description", f"Step {step_num}")
-                commit_msg = step.get("commit_message", f"feat: {step_desc}")
+                commit_msg = _derive_commit_message(step.get("commit_message"), step_desc, step.get("files"))
 
                 log_think(f"Step {step_num}/{len(steps)}: {step_desc}", AGENT_NAME)
                 append_build_log(task_dir, f"Step {step_num}: {step_desc}")
@@ -1157,7 +1311,12 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                                "npm install completed successfully",
                                "All packages installed", 86.0)
             else:
+                install_summary = summarize_failure_output("npm install", out)
                 log_warn(f"npm install failed (rc={rc})", AGENT_NAME)
+                write_progress(task_dir, task_id, "review", "Dependency install failed",
+                               "npm install failed; the tester will block deployment until this is fixed",
+                               install_summary, 84.0,
+                               metadata={"diagnosis": install_summary, "exit_code": rc})
 
         if not has_meaningful_implementation(task_dir):
             state["status"] = "coding"
