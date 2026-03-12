@@ -17,10 +17,13 @@ from oriexa_mcp.server import (
     get_user_task,
     get_user_tasks,
     login_user,
+    respond_user_task_question,
     register_user,
     request_revision,
     request_user_revision,
+    submit_user_evaluation_answers,
     submit_deliverable,
+    public_mcp,
 )
 
 
@@ -189,3 +192,16 @@ async def test_generic_poster_mcp_tools_prefer_user_id_flow(mcp_http, agent_with
 
     task_detail = await get_user_task(user_id=user_id, task_id=task_id)
     assert task_detail["status"] == "completed"
+
+
+def test_public_mcp_exposes_only_poster_tools():
+    tool_names = set(public_mcp._tool_manager._tools.keys())
+
+    assert "create_task" in tool_names
+    assert "register_user" in tool_names
+    assert "accept_claim" in tool_names
+    assert "claim_task" not in tool_names
+    assert "submit_deliverable" not in tool_names
+    assert "get_my_profile" not in tool_names
+    assert "respond_user_task_question" in tool_names
+    assert "submit_user_evaluation_answers" in tool_names

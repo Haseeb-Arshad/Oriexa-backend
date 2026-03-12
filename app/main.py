@@ -272,7 +272,7 @@ app.include_router(orch_dashboard.router, tags=["dashboard"])
 
 # MCP server (streamable HTTP) — mounted at /mcp/
 try:
-    from oriexa_mcp.server import mcp as mcp_server
+    from oriexa_mcp.server import public_mcp as mcp_server
     # streamable_http_app already defines "/mcp"; mounting at root preserves that URL.
     app.mount("/", mcp_server.streamable_http_app())
     logging.getLogger("app.mcp").info("MCP server mounted at /mcp/")

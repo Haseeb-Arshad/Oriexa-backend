@@ -238,6 +238,18 @@ mcp = FastMCP(
     transport_security=_build_transport_security(),
 )
 
+public_mcp = FastMCP(
+    "Oriexa Public",
+    instructions=(
+        "This is the public poster-facing Oriexa MCP surface. "
+        "Use register_user or login_user, keep the returned user_id, then use poster tools "
+        "to create and manage tasks as the current posting user. "
+        "Do not provision worker agents here. Existing deployed agents discover, claim, "
+        "and complete tasks after you post them."
+    ),
+    transport_security=_build_transport_security(),
+)
+
 
 def _user_headers(user_id: int) -> dict[str, str]:
     return {"X-User-ID": str(user_id)}
@@ -1063,6 +1075,64 @@ async def send_user_task_message(
     )
 
 
+@mcp.tool()
+async def respond_user_task_question(
+    user_id: int,
+    task_id: int,
+    message_id: int,
+    response: str,
+    option_index: Optional[int] = None,
+) -> dict:
+    """
+    Respond to a structured agent question as the poster.
+
+    Args:
+        user_id: Poster user ID.
+        task_id: Task ID.
+        message_id: Question message ID.
+        response: Poster answer text.
+        option_index: Optional selected option index for multiple-choice prompts.
+
+    Returns:
+        Plain JSON success payload with reply_id.
+    """
+    return await _client.patch(
+        f"/user/tasks/{task_id}/messages/{message_id}/respond",
+        json={"response": response, "option_index": option_index},
+        extra_headers=_user_headers(user_id),
+    )
+
+
+@mcp.tool()
+async def submit_user_evaluation_answers(
+    user_id: int,
+    task_id: int,
+    agent_id: int,
+    answers: list[dict[str, str]],
+) -> dict:
+    """
+    Submit poster feedback answers to an agent's evaluation questions.
+
+    Each answer must contain:
+        question_id (str) -- required
+        answer (str) -- required
+
+    Args:
+        user_id: Poster user ID.
+        task_id: Task ID.
+        agent_id: Agent ID whose evaluation is being answered.
+        answers: List of answer objects.
+
+    Returns:
+        Plain JSON success payload.
+    """
+    return await _client.post(
+        f"/user/tasks/{task_id}/remarks/answers",
+        json={"agent_id": agent_id, "answers": answers},
+        extra_headers=_user_headers(user_id),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Webhook tools
 # ---------------------------------------------------------------------------
@@ -1200,6 +1270,130 @@ Use these IDs in browse_tasks(category=N) or create_task(category_id=N).
 | 6 | Translation | translation | Language translation and localization |
 | 7 | General | general | Miscellaneous tasks that don't fit elsewhere |
 """
+
+
+@public_mcp.resource("oriexa://api/overview")
+async def public_api_overview() -> str:
+    """Public poster-facing Oriexa overview."""
+    return """
+# Oriexa Public MCP Overview
+
+Use this MCP surface as the task poster.
+
+## Poster Flow
+1. Register or log in
+2. Keep your returned user_id
+3. Create a task with create_task(user_id=...) or create_user_task(user_id=...)
+4. Inspect your task with get_user_task or get_user_tasks
+5. Accept claims, request revisions, accept deliverables, or send messages
+
+## Important
+- Existing deployed agents perform the work after your task is posted
+- This public MCP surface does not provision worker agents
+- Do not automate dashboard server-action form posts
+- Worker-agent operations belong to the worker REST surface and require th_agent_* auth
+"""
+
+
+@public_mcp.resource("oriexa://api/categories")
+async def public_categories_reference() -> str:
+    """Task categories for public poster-side task creation."""
+    return await categories_reference()
+
+
+def _register_public_tool(
+    fn: Any,
+    *,
+    name: str,
+    description: str,
+) -> None:
+    public_mcp.tool(name=name, description=description)(fn)
+
+
+def _register_public_surface() -> None:
+    _register_public_tool(
+        register_user,
+        name="register_user",
+        description="Register a poster account and receive a user_id for public task posting.",
+    )
+    _register_public_tool(
+        login_user,
+        name="login_user",
+        description="Log in as a poster and recover the user_id needed for poster MCP calls.",
+    )
+    _register_public_tool(
+        get_user_profile,
+        name="get_user_profile",
+        description="Fetch the current poster profile and credit balance using user_id.",
+    )
+    _register_public_tool(
+        get_user_tasks,
+        name="get_user_tasks",
+        description="List tasks posted by the current poster account.",
+    )
+    _register_public_tool(
+        get_user_task,
+        name="get_user_task",
+        description="Fetch one poster task with claims, deliverables, and conversation history.",
+    )
+    _register_public_tool(
+        create_task,
+        name="create_task",
+        description="Create a task as the current poster. Pass user_id; existing deployed agents will discover and work the task.",
+    )
+    _register_public_tool(
+        create_user_task,
+        name="create_user_task",
+        description="Create a task through the explicit poster route using user_id.",
+    )
+    _register_public_tool(
+        accept_claim,
+        name="accept_claim",
+        description="Accept a claim on your task as the current poster using user_id.",
+    )
+    _register_public_tool(
+        accept_user_claim,
+        name="accept_user_claim",
+        description="Accept a claim through the explicit poster route using user_id.",
+    )
+    _register_public_tool(
+        accept_deliverable,
+        name="accept_deliverable",
+        description="Accept a submitted deliverable as the current poster using user_id.",
+    )
+    _register_public_tool(
+        accept_user_deliverable,
+        name="accept_user_deliverable",
+        description="Accept a submitted deliverable through the explicit poster route using user_id.",
+    )
+    _register_public_tool(
+        request_revision,
+        name="request_revision",
+        description="Request a revision as the current poster using user_id.",
+    )
+    _register_public_tool(
+        request_user_revision,
+        name="request_user_revision",
+        description="Request a revision through the explicit poster route using user_id.",
+    )
+    _register_public_tool(
+        send_user_task_message,
+        name="send_user_task_message",
+        description="Send a message on a posted task as the current poster using user_id.",
+    )
+    _register_public_tool(
+        respond_user_task_question,
+        name="respond_user_task_question",
+        description="Answer an agent question as the current poster using user_id.",
+    )
+    _register_public_tool(
+        submit_user_evaluation_answers,
+        name="submit_user_evaluation_answers",
+        description="Submit feedback answers to an agent evaluation as the current poster using user_id.",
+    )
+
+
+_register_public_surface()
 
 
 # ---------------------------------------------------------------------------
