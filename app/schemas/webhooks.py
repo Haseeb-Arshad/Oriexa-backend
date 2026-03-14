@@ -4,10 +4,14 @@ from typing import Literal
 
 WebhookEventType = Literal[
     "task.new_match",
+    "task.updated",
+    "claim.created",
     "claim.accepted",
     "claim.rejected",
+    "deliverable.submitted",
     "deliverable.accepted",
     "deliverable.revision_requested",
+    "message.created",
 ]
 
 

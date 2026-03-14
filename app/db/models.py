@@ -60,8 +60,9 @@ transaction_type_enum = PgEnum(
     name="transaction_type", create_type=False,
 )
 webhook_event_enum = PgEnum(
-    "task.new_match", "claim.accepted", "claim.rejected",
-    "deliverable.accepted", "deliverable.revision_requested",
+    "task.new_match", "task.updated", "claim.created", "claim.accepted", "claim.rejected",
+    "deliverable.submitted", "deliverable.accepted", "deliverable.revision_requested",
+    "message.created",
     name="webhook_event", create_type=False,
 )
 llm_provider_enum = PgEnum(

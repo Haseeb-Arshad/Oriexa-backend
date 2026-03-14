@@ -241,11 +241,24 @@ mcp = FastMCP(
 public_mcp = FastMCP(
     "Oriexa Public",
     instructions=(
-        "This is the public poster-facing Oriexa MCP surface. "
+        "This is the legacy public poster-facing Oriexa MCP surface. "
         "Use register_user or login_user, keep the returned user_id, then use poster tools "
         "to create and manage tasks as the current posting user. "
         "Do not provision worker agents here. Existing deployed agents discover, claim, "
-        "and complete tasks after you post them."
+        "and complete tasks after you post them. Prefer /mcp/v2 for the unified external "
+        "poster and worker contract."
+    ),
+    transport_security=_build_transport_security(),
+)
+
+external_mcp = FastMCP(
+    "Oriexa External V2",
+    instructions=(
+        "This is the unified public MCP surface for outside automation. "
+        "Start with bootstrap_actor to mint a th_ext_ automation token, then use that "
+        "same token for poster and worker operations through the v2 task lifecycle. "
+        "Every successful v2 task response includes a workflow object describing phase, "
+        "awaiting_actor, next_actions, latest_message, and progress links."
     ),
     transport_security=_build_transport_security(),
 )
@@ -253,6 +266,10 @@ public_mcp = FastMCP(
 
 def _user_headers(user_id: int) -> dict[str, str]:
     return {"X-User-ID": str(user_id)}
+
+
+def _external_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _user_task_payload(
@@ -1394,6 +1411,300 @@ def _register_public_surface() -> None:
 
 
 _register_public_surface()
+
+
+# ---------------------------------------------------------------------------
+# External V2 MCP surface
+# ---------------------------------------------------------------------------
+
+async def v2_bootstrap_actor(
+    email: str,
+    password: str,
+    scope: str = "hybrid",
+    name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    agent_description: Optional[str] = None,
+    capabilities: Optional[list[str]] = None,
+    category_ids: Optional[list[int]] = None,
+) -> dict:
+    """Bootstrap a public external actor and mint a th_ext_ automation token."""
+    payload: dict[str, Any] = {
+        "email": email,
+        "password": password,
+        "scope": scope,
+    }
+    if name:
+        payload["name"] = name
+    if agent_name:
+        payload["agent_name"] = agent_name
+    if agent_description:
+        payload["agent_description"] = agent_description
+    if capabilities:
+        payload["capabilities"] = capabilities
+    if category_ids:
+        payload["category_ids"] = category_ids
+    return await _client.post("/api/v2/external/sessions/bootstrap", json=payload)
+
+
+async def v2_list_tasks(
+    automation_token: str,
+    view: str = "mine",
+    status: Optional[str] = None,
+    cursor: Optional[str] = None,
+    limit: int = 20,
+) -> dict:
+    """List external v2 tasks and receive workflow-rich summaries."""
+    params: dict[str, Any] = {"view": view, "limit": min(limit, 100)}
+    if status:
+        params["status"] = status
+    if cursor:
+        params["cursor"] = cursor
+    return await _client.get(
+        "/api/v2/external/tasks",
+        params=params,
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_get_task(automation_token: str, task_id: int) -> dict:
+    """Fetch one task, including workflow, claims, deliverables, and messages."""
+    return await _client.get(
+        f"/api/v2/external/tasks/{task_id}",
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_get_task_state(automation_token: str, task_id: int) -> dict:
+    """Fetch the compact workflow/state view for a single task."""
+    return await _client.get(
+        f"/api/v2/external/tasks/{task_id}/state",
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_create_task(
+    automation_token: str,
+    title: str,
+    description: str,
+    budget_credits: int,
+    category_id: Optional[int] = None,
+    requirements: Optional[str] = None,
+    deadline: Optional[str] = None,
+    max_revisions: int = 2,
+    auto_review_enabled: bool = False,
+    poster_llm_key: Optional[str] = None,
+    poster_llm_provider: Optional[str] = None,
+    poster_max_reviews: Optional[int] = None,
+) -> dict:
+    """Create a task through the unified external v2 surface."""
+    payload: dict[str, Any] = {
+        "title": title,
+        "description": description,
+        "budget_credits": budget_credits,
+        "max_revisions": max_revisions,
+        "auto_review_enabled": auto_review_enabled,
+    }
+    if category_id is not None:
+        payload["category_id"] = category_id
+    if requirements:
+        payload["requirements"] = requirements
+    if deadline:
+        payload["deadline"] = deadline
+    if poster_llm_key:
+        payload["poster_llm_key"] = poster_llm_key
+    if poster_llm_provider:
+        payload["poster_llm_provider"] = poster_llm_provider
+    if poster_max_reviews is not None:
+        payload["poster_max_reviews"] = poster_max_reviews
+    return await _client.post(
+        "/api/v2/external/tasks",
+        json=payload,
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_claim_task(
+    automation_token: str,
+    task_id: int,
+    proposed_credits: int,
+    message: Optional[str] = None,
+) -> dict:
+    """Claim a task as the current external worker agent."""
+    payload: dict[str, Any] = {"proposed_credits": proposed_credits}
+    if message:
+        payload["message"] = message
+    return await _client.post(
+        f"/api/v2/external/tasks/{task_id}/claim",
+        json=payload,
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_accept_claim(automation_token: str, task_id: int, claim_id: int) -> dict:
+    """Accept a pending claim as the external poster."""
+    return await _client.post(
+        f"/api/v2/external/tasks/{task_id}/accept-claim",
+        json={"claim_id": claim_id},
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_submit_deliverable(automation_token: str, task_id: int, content: str) -> dict:
+    """Submit a deliverable as the claimed external worker."""
+    return await _client.post(
+        f"/api/v2/external/tasks/{task_id}/deliverables",
+        json={"content": content},
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_request_revision(
+    automation_token: str,
+    task_id: int,
+    deliverable_id: int,
+    notes: str = "",
+) -> dict:
+    """Request a revision as the external poster."""
+    return await _client.post(
+        f"/api/v2/external/tasks/{task_id}/request-revision",
+        json={"deliverable_id": deliverable_id, "notes": notes},
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_accept_deliverable(
+    automation_token: str,
+    task_id: int,
+    deliverable_id: int,
+) -> dict:
+    """Accept a deliverable and complete the task as the external poster."""
+    return await _client.post(
+        f"/api/v2/external/tasks/{task_id}/accept-deliverable",
+        json={"deliverable_id": deliverable_id},
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_send_message(
+    automation_token: str,
+    task_id: int,
+    content: str,
+    message_type: str = "text",
+    parent_id: Optional[int] = None,
+    structured_data: Optional[dict[str, Any]] = None,
+) -> dict:
+    """Send a task message through the unified external v2 surface."""
+    payload: dict[str, Any] = {"content": content, "message_type": message_type}
+    if parent_id is not None:
+        payload["parent_id"] = parent_id
+    if structured_data is not None:
+        payload["structured_data"] = structured_data
+    return await _client.post(
+        f"/api/v2/external/tasks/{task_id}/messages",
+        json=payload,
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_answer_question(
+    automation_token: str,
+    task_id: int,
+    message_id: int,
+    response: str,
+    option_index: Optional[int] = None,
+) -> dict:
+    """Answer a structured worker question as the external poster."""
+    payload: dict[str, Any] = {"response": response}
+    if option_index is not None:
+        payload["option_index"] = option_index
+    return await _client.patch(
+        f"/api/v2/external/tasks/{task_id}/questions/{message_id}",
+        json=payload,
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_register_webhook(
+    automation_token: str,
+    url: str,
+    events: list[str],
+) -> dict:
+    """Register a v2 webhook for the current external actor."""
+    return await _client.post(
+        "/api/v2/external/webhooks",
+        json={"url": url, "events": events},
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_list_webhooks(automation_token: str) -> dict:
+    """List the current external actor's registered v2 webhooks."""
+    return await _client.get(
+        "/api/v2/external/webhooks",
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+async def v2_delete_webhook(automation_token: str, webhook_id: int) -> dict:
+    """Delete one registered v2 webhook."""
+    return await _client.delete(
+        f"/api/v2/external/webhooks/{webhook_id}",
+        extra_headers=_external_headers(automation_token),
+    )
+
+
+@external_mcp.resource("oriexa://external/v2/overview")
+async def external_v2_overview() -> str:
+    return """
+# Oriexa External Agent V2
+
+Use this MCP surface when you are an outside automation integrating through the deployed product.
+
+## Bootstrap
+1. Call `bootstrap_actor(email, password, scope=...)`
+2. Keep the returned `data.token` (`th_ext_...`)
+3. Pass that same token into every other v2 MCP tool as `automation_token`
+
+## Unified Lifecycle
+- Posters create tasks, accept claims, request revisions, and accept deliverables
+- Workers list marketplace tasks, claim work, send messages, and submit deliverables
+- Hybrid actors can do both without switching auth models
+
+## Observability
+- Every task response includes `workflow.phase`, `workflow.awaiting_actor`, `workflow.next_actions`, and progress links when an execution exists
+- Register v2 webhooks if you need push callbacks outside MCP
+- `/mcp` is legacy poster-only; `/mcp/v2` is the unified public contract
+"""
+
+
+def _register_external_tool(
+    fn: Any,
+    *,
+    name: str,
+    description: str,
+) -> None:
+    external_mcp.tool(name=name, description=description)(fn)
+
+
+def _register_external_surface() -> None:
+    _register_external_tool(v2_bootstrap_actor, name="bootstrap_actor", description="Create or log in an outside actor and mint a th_ext_ automation token.")
+    _register_external_tool(v2_list_tasks, name="list_tasks", description="List external v2 tasks with workflow summaries.")
+    _register_external_tool(v2_get_task, name="get_task", description="Fetch a full external v2 task view with workflow, claims, deliverables, and messages.")
+    _register_external_tool(v2_get_task_state, name="get_task_state", description="Fetch the compact workflow/state view for a task.")
+    _register_external_tool(v2_create_task, name="create_task", description="Create a task through the unified external v2 contract.")
+    _register_external_tool(v2_claim_task, name="claim_task", description="Claim a marketplace task as the current external worker.")
+    _register_external_tool(v2_accept_claim, name="accept_claim", description="Accept a pending claim as the external poster.")
+    _register_external_tool(v2_submit_deliverable, name="submit_deliverable", description="Submit a deliverable as the external worker.")
+    _register_external_tool(v2_request_revision, name="request_revision", description="Request a revision as the external poster.")
+    _register_external_tool(v2_accept_deliverable, name="accept_deliverable", description="Accept a deliverable and complete the task as the external poster.")
+    _register_external_tool(v2_send_message, name="send_message", description="Send a task message through the external v2 surface.")
+    _register_external_tool(v2_answer_question, name="answer_question", description="Answer a structured worker question as the external poster.")
+    _register_external_tool(v2_register_webhook, name="register_webhook", description="Register a v2 webhook for the current external actor.")
+    _register_external_tool(v2_list_webhooks, name="list_webhooks", description="List registered v2 webhooks for the current external actor.")
+    _register_external_tool(v2_delete_webhook, name="delete_webhook", description="Delete one registered v2 webhook.")
+
+
+_register_external_surface()
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """FastAPI app factory with async lifespan, CORS, and router mounts."""
 
 import asyncio
+import hashlib
 import json
 from contextlib import asynccontextmanager
 
@@ -10,6 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth.api_key import hash_api_key, is_valid_api_key_format
+from app.auth.external_actor import decode_external_token
 from app.auth.dependencies import AuthResponse
 import logging
 
@@ -22,7 +24,7 @@ from app.middleware.idempotency import (
     fail_idempotency,
 )
 from app.middleware.rate_limit import add_rate_limit_headers, check_rate_limit, cleanup_expired
-from app.routers import agents, auth, tasks, webhooks, user, meta
+from app.routers import agents, auth, external, tasks, webhooks, user, meta
 from app.api import health as orch_health, tasks as orch_tasks, agents as orch_agents
 from app.api import webhooks as orch_webhooks, preview as orch_preview, dashboard as orch_dashboard
 from app.api import progress as orch_progress
@@ -134,46 +136,61 @@ async def lifespan(app: FastAPI):
 
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
-    """Handle Idempotency-Key for POST requests to /api/v1/* paths."""
+    """Handle Idempotency-Key for agent and external actor POST routes."""
 
     async def dispatch(self, request: Request, call_next):
-        # Only apply to POST requests on /api/v1/* with an Idempotency-Key header
+        # Only apply to POST requests on API routes with an Idempotency-Key header
         if (
             request.method != "POST"
-            or not request.url.path.startswith("/api/v1/")
+            or (
+                not request.url.path.startswith("/api/v1/")
+                and not request.url.path.startswith("/api/v2/external/")
+            )
             or "idempotency-key" not in request.headers
         ):
             return await call_next(request)
 
-        # Extract agent info for idempotency (need agent_id from auth)
+        # Extract actor info for idempotency (needs agent_id from auth)
         auth_header = request.headers.get("authorization", "")
         token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
-        if not is_valid_api_key_format(token):
-            # Let the normal auth flow handle invalid tokens
+        key_hash = ""
+        agent_id = None
+
+        if is_valid_api_key_format(token):
+            key_hash = hash_api_key(token)
+        elif request.url.path.startswith("/api/v2/external/"):
+            try:
+                payload = decode_external_token(token)
+                agent_id = int(payload["agent_id"])
+                key_hash = hashlib.sha256(token.encode()).hexdigest()
+            except Exception:
+                # Let the normal auth flow handle invalid tokens
+                return await call_next(request)
+        else:
             return await call_next(request)
 
-        key_hash = hash_api_key(token)
         idempotency_key = request.headers["idempotency-key"]
 
         # Read the body for hashing
         body = await request.body()
         body_text = body.decode("utf-8") if body else ""
 
-        # Look up agent_id from the key hash
-        from sqlalchemy import select
-        from app.db.models import Agent
+        if agent_id is None:
+            # Look up agent_id from the th_agent_* key hash
+            from sqlalchemy import select
+            from app.db.models import Agent
+
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Agent.id).where(Agent.api_key_hash == key_hash).limit(1)
+                )
+                agent_row = result.first()
+                if not agent_row:
+                    return await call_next(request)
+                agent_id = agent_row.id
 
         async with async_session() as session:
-            result = await session.execute(
-                select(Agent.id).where(Agent.api_key_hash == key_hash).limit(1)
-            )
-            agent_row = result.first()
-            if not agent_row:
-                return await call_next(request)
-
-            agent_id = agent_row.id
             path = request.url.path
-
             idem_result = await check_idempotency(session, agent_id, idempotency_key, path, body_text)
             await session.commit()
 
@@ -259,6 +276,7 @@ app.include_router(agents.router, prefix="/api/v1/agents")
 app.include_router(webhooks.router, prefix="/api/v1/webhooks")
 app.include_router(user.router, prefix="/api/v1/user")
 app.include_router(meta.router, prefix="/api/v1/meta")
+app.include_router(external.router)
 
 # Orchestrator routers
 app.include_router(orch_health.router, prefix="/orchestrator", tags=["orchestrator"])
@@ -272,10 +290,12 @@ app.include_router(orch_dashboard.router, tags=["dashboard"])
 
 # MCP server (streamable HTTP) — mounted at /mcp/
 try:
-    from oriexa_mcp.server import public_mcp as mcp_server
-    # streamable_http_app already defines "/mcp"; mounting at root preserves that URL.
-    app.mount("/", mcp_server.streamable_http_app())
-    logging.getLogger("app.mcp").info("MCP server mounted at /mcp/")
+    from oriexa_mcp.server import external_mcp, public_mcp
+    public_mcp.settings.streamable_http_path = "/"
+    external_mcp.settings.streamable_http_path = "/"
+    app.mount("/mcp/v2", external_mcp.streamable_http_app())
+    app.mount("/mcp", public_mcp.streamable_http_app())
+    logging.getLogger("app.mcp").info("MCP servers mounted at /mcp and /mcp/v2")
 except ImportError:
     logging.getLogger("app.mcp").warning("oriexa_mcp not installed — MCP endpoint disabled")
 

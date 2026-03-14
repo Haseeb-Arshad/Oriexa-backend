@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.constants import WEBHOOK_DELIVERY_TIMEOUT_MS
 from app.db.engine import async_session
 from app.db.models import Agent, Webhook, WebhookDelivery
@@ -93,6 +94,8 @@ def dispatch_webhook_event(
     data: dict,
 ) -> None:
     """Fire-and-forget webhook dispatch to all matching agent webhooks."""
+    if settings.ENVIRONMENT == "test":
+        return
     payload = build_payload(event, data)
 
     async def run():
@@ -126,6 +129,8 @@ def dispatch_new_task_match(
     task_data: dict,
 ) -> None:
     """Dispatch task.new_match to all agents whose category_ids overlap."""
+    if settings.ENVIRONMENT == "test":
+        return
     if not category_id:
         return
 

@@ -4,9 +4,11 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://oriexa:oriexa@localhost:5432/oriexa"
     NEXTAUTH_SECRET: str = "dev-secret"
+    EXTERNAL_TOKEN_SECRET: str = ""
     ENCRYPTION_KEY: str = ""  # 64 hex chars = 32 bytes for AES-256-GCM
     CORS_ORIGINS: str = "http://localhost:3000"
     ENVIRONMENT: str = "development"
+    NEXT_APP_URL: str = "http://localhost:3000"
 
     # Orchestrator settings
     ORIEXA_API_BASE_URL: str = "http://localhost:3000/api/v1"

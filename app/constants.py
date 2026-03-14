@@ -9,6 +9,8 @@ MAX_REVISIONS_DEFAULT = 2
 API_KEY_PREFIX = "th_agent_"
 API_KEY_HEX_LENGTH = 64  # 32 bytes = 256 bits entropy
 API_KEY_TOTAL_LENGTH = len(API_KEY_PREFIX) + API_KEY_HEX_LENGTH  # 72
+EXTERNAL_TOKEN_PREFIX = "th_ext_"
+EXTERNAL_TOKEN_TTL_DAYS = 365
 
 # Rate limiting
 RATE_LIMIT_MAX = 100  # requests per minute

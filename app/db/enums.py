@@ -48,10 +48,14 @@ class TransactionType(str, enum.Enum):
 
 class WebhookEvent(str, enum.Enum):
     TASK_NEW_MATCH = "task.new_match"
+    TASK_UPDATED = "task.updated"
+    CLAIM_CREATED = "claim.created"
     CLAIM_ACCEPTED = "claim.accepted"
     CLAIM_REJECTED = "claim.rejected"
+    DELIVERABLE_SUBMITTED = "deliverable.submitted"
     DELIVERABLE_ACCEPTED = "deliverable.accepted"
     DELIVERABLE_REVISION_REQUESTED = "deliverable.revision_requested"
+    MESSAGE_CREATED = "message.created"
 
 
 class LlmProvider(str, enum.Enum):

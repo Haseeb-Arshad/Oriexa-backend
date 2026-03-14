@@ -1,4 +1,4 @@
-"""Test fixtures: async client, test DB, seeded data."""
+"""Test fixtures: async client, fresh schema, and seeded actors."""
 
 import os
 
@@ -9,110 +9,90 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 # Override env vars before importing app
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/oriexa_test")
-os.environ.setdefault("NEXTAUTH_SECRET", "test-secret")
+os.environ.setdefault("NEXTAUTH_SECRET", "test-secret-0123456789abcdef0123456789abcdef")
+os.environ.setdefault("EXTERNAL_TOKEN_SECRET", "test-secret-0123456789abcdef0123456789abcdef")
 os.environ.setdefault("ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 os.environ.setdefault("ENVIRONMENT", "test")
 
+from app.auth.api_key import generate_api_key
+from app.db import models as db_models
 from app.db.engine import get_db
 from app.db.models import Agent, Base
 from app.main import app
-from app.auth.api_key import generate_api_key
 
 TEST_DATABASE_URL = os.environ["DATABASE_URL"]
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+async_test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+ENUM_TYPES = [
+    db_models.user_role_enum,
+    db_models.agent_status_enum,
+    db_models.task_status_enum,
+    db_models.claim_status_enum,
+    db_models.deliverable_status_enum,
+    db_models.transaction_type_enum,
+    db_models.webhook_event_enum,
+    db_models.llm_provider_enum,
+    db_models.review_result_enum,
+    db_models.review_key_source_enum,
+    db_models.orch_task_status_enum,
+    db_models.agent_role_enum,
+    db_models.subtask_status_enum,
+    db_models.message_direction_enum,
+    db_models.task_msg_sender_type_enum,
+    db_models.task_msg_type_enum,
+]
+
+
+async def _recreate_schema() -> None:
+    await test_engine.dispose()
+    async with test_engine.begin() as conn:
+        await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+
+        for enum_type in ENUM_TYPES:
+            values = ", ".join(f"'{value}'" for value in enum_type.enums)
+            await conn.execute(text(f"DROP TYPE IF EXISTS {enum_type.name} CASCADE"))
+            await conn.execute(text(f"CREATE TYPE {enum_type.name} AS ENUM ({values})"))
+
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with async_test_session_factory() as session:
+        from app.db.seed import seed_categories
+
+        await seed_categories(session)
+    await test_engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
 async def setup_database():
-    """Create all tables and seed categories once for the test session."""
-    async with test_engine.begin() as conn:
-        # Drop and recreate all tables
-        await conn.run_sync(Base.metadata.drop_all)
-
-        # Create enum types first
-        for enum_sql in [
-            "DROP TYPE IF EXISTS user_role CASCADE",
-            "DROP TYPE IF EXISTS agent_status CASCADE",
-            "DROP TYPE IF EXISTS task_status CASCADE",
-            "DROP TYPE IF EXISTS claim_status CASCADE",
-            "DROP TYPE IF EXISTS deliverable_status CASCADE",
-            "DROP TYPE IF EXISTS transaction_type CASCADE",
-            "DROP TYPE IF EXISTS webhook_event CASCADE",
-            "DROP TYPE IF EXISTS llm_provider CASCADE",
-            "DROP TYPE IF EXISTS review_result CASCADE",
-            "DROP TYPE IF EXISTS review_key_source CASCADE",
-            "DROP TYPE IF EXISTS orch_task_status CASCADE",
-            "DROP TYPE IF EXISTS agent_role CASCADE",
-            "DROP TYPE IF EXISTS subtask_status CASCADE",
-            "DROP TYPE IF EXISTS message_direction CASCADE",
-            "DROP TYPE IF EXISTS task_msg_sender_type CASCADE",
-            "DROP TYPE IF EXISTS task_msg_type CASCADE",
-            "CREATE TYPE user_role AS ENUM ('poster', 'operator', 'both', 'admin')",
-            "CREATE TYPE agent_status AS ENUM ('active', 'paused', 'suspended')",
-            "CREATE TYPE task_status AS ENUM ('open', 'claimed', 'in_progress', 'delivered', 'completed', 'cancelled', 'disputed')",
-            "CREATE TYPE claim_status AS ENUM ('pending', 'accepted', 'rejected', 'withdrawn')",
-            "CREATE TYPE deliverable_status AS ENUM ('submitted', 'accepted', 'rejected', 'revision_requested')",
-            "CREATE TYPE transaction_type AS ENUM ('deposit', 'bonus', 'payment', 'platform_fee', 'refund')",
-            "CREATE TYPE webhook_event AS ENUM ('task.new_match', 'claim.accepted', 'claim.rejected', 'deliverable.accepted', 'deliverable.revision_requested')",
-            "CREATE TYPE llm_provider AS ENUM ('openrouter', 'openai', 'anthropic')",
-            "CREATE TYPE review_result AS ENUM ('pass', 'fail', 'pending', 'skipped')",
-            "CREATE TYPE review_key_source AS ENUM ('poster', 'freelancer', 'none')",
-            "CREATE TYPE orch_task_status AS ENUM ('pending', 'claiming', 'clarifying', 'planning', 'executing', 'reviewing', 'delivering', 'completed', 'failed')",
-            "CREATE TYPE agent_role AS ENUM ('triage', 'clarification', 'planning', 'execution', 'complex_task', 'review')",
-            "CREATE TYPE subtask_status AS ENUM ('pending', 'in_progress', 'completed', 'failed', 'skipped')",
-            "CREATE TYPE message_direction AS ENUM ('agent_to_poster', 'poster_to_agent')",
-            "CREATE TYPE task_msg_sender_type AS ENUM ('poster', 'agent', 'system')",
-            "CREATE TYPE task_msg_type AS ENUM ('text', 'question', 'attachment', 'claim_proposal', 'status_change', 'revision_request', 'remark')",
-        ]:
-            await conn.execute(text(enum_sql))
-
-        await conn.run_sync(Base.metadata.create_all)
-
-    # Seed categories
-    async with test_session_factory() as session:
-        from app.db.seed import seed_categories
-        await seed_categories(session)
-
     yield
-
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await test_engine.dispose()
 
 
-@pytest_asyncio.fixture(autouse=True, loop_scope="session")
-async def clean_tables():
-    """Truncate data tables between tests (keep categories)."""
-    yield
-    async with test_session_factory() as session:
-        for table in [
-            "orch_agent_runs", "orch_messages", "orch_subtasks", "orch_task_executions",
-            "task_messages", "submission_attempts", "idempotency_keys", "webhook_deliveries",
-            "webhooks", "credit_transactions", "reviews", "deliverables",
-            "task_claims", "tasks", "agents", "users",
-        ]:
-            await session.execute(text(f"TRUNCATE {table} RESTART IDENTITY CASCADE"))
-        await session.commit()
-
-    # Reset rate limiter and auth cache
-    from app.middleware.rate_limit import reset_store
+@pytest_asyncio.fixture(autouse=True)
+async def reset_database():
+    await _recreate_schema()
     from app.auth.dependencies import clear_auth_cache
+    from app.middleware.rate_limit import reset_store
+
     reset_store()
     clear_auth_cache()
+    yield
 
 
 async def _override_get_db():
-    async with test_session_factory() as session:
+    async with async_test_session_factory() as session:
         yield session
 
 
 app.dependency_overrides[get_db] = _override_get_db
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture
 async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -122,11 +102,14 @@ async def client():
 @pytest_asyncio.fixture
 async def registered_user(client: AsyncClient):
     """Register a user and return their info."""
-    resp = await client.post("/api/auth/register", json={
-        "email": "test@example.com",
-        "password": "password123",
-        "name": "Test User",
-    })
+    resp = await client.post(
+        "/api/auth/register",
+        json={
+            "email": "test@example.com",
+            "password": "password123",
+            "name": "Test User",
+        },
+    )
     assert resp.status_code == 201
     return resp.json()
 
@@ -135,7 +118,7 @@ async def registered_user(client: AsyncClient):
 async def agent_with_key(client: AsyncClient, registered_user):
     """Create an agent directly in DB and return info with raw API key."""
     key_info = generate_api_key()
-    async with test_session_factory() as session:
+    async with async_test_session_factory() as session:
         agent = Agent(
             operator_id=registered_user["id"],
             name="Test Agent",

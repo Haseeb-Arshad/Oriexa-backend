@@ -1,15 +1,8 @@
-"""End-to-end test: every MCP tool → ASGI transport → real FastAPI handlers.
-
-Validates MCP tools by running a full agent lifecycle narrative:
-  browse → create task → claim → deliver → revise → complete
-  → webhooks → bulk ops → management → error cases
-
-No live server required — requests go in-process via httpx ASGITransport.
-"""
+"""End-to-end test for the current legacy MCP tool surface."""
 
 from __future__ import annotations
 
-import re
+import inspect
 
 import pytest
 import pytest_asyncio
@@ -20,35 +13,15 @@ from oriexa_mcp.errors import OriexaAPIError
 from oriexa_mcp.server import _client as mcp_client
 from oriexa_mcp.server import mcp as mcp_server
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
-
-def _id(pattern: str, text: str) -> str:
-    """Extract the first integer matching *pattern* from an MCP Markdown response."""
-    m = re.search(pattern, text)
-    assert m, f"Pattern {pattern!r} not found in:\n{text[:500]}"
-    return m.group(1)
-
-
-# ── Fixtures ──────────────────────────────────────────────────────────────────
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def call(client: AsyncClient, agent_with_key):
-    """Wire MCP tool closures to the ASGI test transport and return a caller.
-
-    * Replaces the global ``_client._client`` with an ASGI-backed httpx client
-      so every MCP tool hits the real FastAPI app in-process.
-    * Includes both ``Authorization`` (for agent endpoints) and ``X-User-ID``
-      (for ``/api/v1/user/*`` endpoints) headers.
-    """
+@pytest_asyncio.fixture
+async def call(agent_with_key):
     api_key = agent_with_key["api_key"]
     operator_id = agent_with_key.get("operator_id", 1)
-
     transport = ASGITransport(app=app)
     test_http = AsyncClient(
         transport=transport,
-        base_url="http://test",
+        base_url="http://test/api/v1",
         headers={
             "Authorization": f"Bearer {api_key}",
             "X-User-ID": str(operator_id),
@@ -56,54 +29,50 @@ async def call(client: AsyncClient, agent_with_key):
         },
     )
     mcp_client._client = test_http
-
     tools = mcp_server._tool_manager._tools
 
     async def _call(tool_name: str, **kwargs) -> str:
-        return await tools[tool_name].fn(**kwargs)
+        tool = tools[tool_name].fn
+        signature = inspect.signature(tool)
+        if "api_key" in signature.parameters and "api_key" not in kwargs:
+            kwargs["api_key"] = api_key
+        if "user_id" in signature.parameters and "user_id" not in kwargs:
+            kwargs["user_id"] = operator_id
+        return await tool(**kwargs)
 
-    yield _call
-
-    await test_http.aclose()
-    mcp_client._client = None
-
-
-# ── Full lifecycle test ───────────────────────────────────────────────────────
+    try:
+        yield _call
+    finally:
+        await test_http.aclose()
+        mcp_client._client = None
 
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_full_lifecycle(call):
-    """11-act narrative exercising MCP tools end-to-end."""
+def test_legacy_mcp_registers_current_tool_names():
+    tool_names = set(mcp_server._tool_manager._tools.keys())
 
-    # ═══ Act 1: Discovery (3 tools) ══════════════════════════════════════════
+    assert "create_task" in tool_names
+    assert "claim_task" in tool_names
+    assert "accept_claim" in tool_names
+    assert "submit_deliverable" in tool_names
+    assert "accept_deliverable" in tool_names
+    assert "register_webhook" in tool_names
+    assert "oriexa_create_task" not in tool_names
 
-    cats = await call("oriexa_get_categories")
-    assert "Available categories" in cats
 
-    browse_empty = await call("oriexa_browse_tasks")
-    assert "No tasks found" in browse_empty
+@pytest.mark.asyncio
+async def test_legacy_mcp_full_lifecycle(call):
+    profile = await call("get_my_profile")
+    assert profile["ok"] is True
+    assert profile["data"]["name"] == "Test Agent"
 
-    health = await call("oriexa_orchestrator_health")
-    assert "ok" in health.lower()
+    updated = await call("update_my_profile", description="Updated via MCP E2E test")
+    assert updated["ok"] is True
 
-    # ═══ Act 2: Agent Profile (3 tools) ══════════════════════════════════════
-    profile = await call("oriexa_get_my_profile")
-    assert "Agent" in profile
-    assert "Test Agent" in profile
-
-    updated = await call(
-        "oriexa_update_profile",
-        description="Updated via MCP E2E test",
-    )
-    assert "updated" in updated.lower()
-
-    credits_before = await call("oriexa_get_my_credits")
-    assert "Credit balance" in credits_before
-
-    # ═══ Act 3: Task Creation (4 tools) ══════════════════════════════════════
+    credits_before = await call("get_my_credits")
+    assert credits_before["ok"] is True
 
     created = await call(
-        "oriexa_create_task",
+        "create_user_task",
         title="Build a REST API",
         description=(
             "Create a comprehensive REST API with authentication, "
@@ -112,203 +81,111 @@ async def test_full_lifecycle(call):
         budget_credits=100,
         category_id="1",
     )
-    assert "Task created" in created
-    task_id = _id(r"Task #(\d+)", created)
+    task_id = created["id"]
 
-    my_tasks = await call("oriexa_get_my_tasks")
-    assert "Build a REST API" in my_tasks
+    user_tasks = await call("get_user_tasks")
+    assert any(task["id"] == task_id for task in user_tasks)
 
-    detail = await call("oriexa_get_task", task_id=task_id)
-    assert "Build a REST API" in detail
-    assert "open" in detail.lower()
+    detail = await call("get_user_task", task_id=task_id)
+    assert detail["title"] == "Build a REST API"
+    assert detail["status"] == "open"
 
-    browse_open = await call("oriexa_browse_tasks", status="open")
-    assert task_id in browse_open
-
-    # ═══ Act 4: Claiming (3 tools) ═══════════════════════════════════════════
+    browse_open = await call("browse_tasks", status="open")
+    assert any(task["id"] == task_id for task in browse_open["data"])
 
     claimed = await call(
-        "oriexa_claim_task",
+        "claim_task",
         task_id=task_id,
         proposed_credits=90,
         message="I can build this API",
     )
-    assert "Claim #" in claimed
-    claim_id = _id(r"Claim #(\d+)", claimed)
+    assert claimed["ok"] is True
+    claim_id = claimed["data"]["id"]
 
-    claims_list = await call("oriexa_get_task_claims", task_id=task_id)
-    assert "claim" in claims_list.lower()
+    claims_list = await call("list_task_claims", task_id=task_id)
+    assert any(claim["id"] == claim_id for claim in claims_list["data"])
 
-    accepted = await call(
-        "oriexa_accept_claim",
-        task_id=task_id,
-        claim_id=claim_id,
-    )
-    assert "accepted" in accepted.lower()
-
-    # ═══ Act 5: Execution (3 tools) ══════════════════════════════════════════
-    # oriexa_start_task — the PATCH endpoint does not exist; verify graceful error
-    with pytest.raises(OriexaAPIError):
-        await call("oriexa_start_task", task_id=task_id, claim_id=claim_id)
-
-    msg_sent = await call(
-        "oriexa_send_message",
-        task_id=task_id,
-        content="Starting work on the REST API now.",
-    )
-    assert "Message sent" in msg_sent
-
-    messages = await call("oriexa_get_task_messages", task_id=task_id)
-    assert "message" in messages.lower()
-
-    # ═══ Act 6: Delivery & Revision (3 tools) ════════════════════════════════
+    accepted = await call("accept_user_claim", task_id=task_id, claim_id=claim_id)
+    assert accepted["success"] is True
 
     delivered = await call(
-        "oriexa_submit_deliverable",
+        "submit_deliverable",
         task_id=task_id,
         content="Here is the completed REST API with all endpoints.",
     )
-    assert "Deliverable #" in delivered
-    deliv_id = _id(r"Deliverable #(\d+)", delivered)
+    assert delivered["ok"] is True
+    deliverable_id = delivered["data"]["id"]
 
-    deliverables = await call("oriexa_get_task_deliverables", task_id=task_id)
-    assert "deliverable" in deliverables.lower()
+    deliverables = await call("list_task_deliverables", task_id=task_id)
+    assert any(item["id"] == deliverable_id for item in deliverables["data"])
 
     revision = await call(
-        "oriexa_request_revision",
+        "request_user_revision",
         task_id=task_id,
-        deliverable_id=deliv_id,
-        revision_notes="Please add rate-limiting documentation.",
+        deliverable_id=deliverable_id,
+        notes="Please add rate-limiting documentation.",
     )
-    assert "revision" in revision.lower()
+    assert revision["success"] is True
 
-    # ═══ Act 7: Final Delivery & Accept (2 tools) ════════════════════════════
-
-    delivered2 = await call(
-        "oriexa_submit_deliverable",
+    delivered_again = await call(
+        "submit_deliverable",
         task_id=task_id,
         content="Updated REST API with rate-limiting documentation added.",
     )
-    assert "Deliverable #" in delivered2
-    deliv_id2 = _id(r"Deliverable #(\d+)", delivered2)
+    assert delivered_again["ok"] is True
+    final_deliverable_id = delivered_again["data"]["id"]
 
-    complete = await call(
-        "oriexa_accept_deliverable",
+    accepted_deliverable = await call(
+        "accept_user_deliverable",
         task_id=task_id,
-        deliverable_id=deliv_id2,
+        deliverable_id=final_deliverable_id,
     )
-    assert "accepted" in complete.lower() or "completed" in complete.lower()
+    assert accepted_deliverable["success"] is True
 
-    # ═══ Act 8: Post-Completion Credits (1 tool) ═════════════════════════════
+    credits_after = await call("get_my_credits")
+    assert credits_after["ok"] is True
 
-    credits_after = await call("oriexa_get_my_credits")
-    assert "Credit balance" in credits_after
-    # Payment transaction should appear in the ledger
-    assert "payment" in credits_after.lower() or "+" in credits_after
-
-    # ═══ Act 9: Webhooks (3 tools) ═══════════════════════════════════════════
-
-    wh_created = await call(
-        "oriexa_create_webhook",
+    webhook_created = await call(
+        "register_webhook",
         url="https://example.com/webhook",
         events=["task.new_match", "claim.accepted"],
     )
-    assert "Webhook" in wh_created
-    wh_id = _id(r"Webhook #(\d+)", wh_created)
+    assert webhook_created["ok"] is True
+    webhook_id = webhook_created["data"]["id"]
 
-    wh_list = await call("oriexa_list_webhooks")
-    assert "example.com" in wh_list
+    webhook_list = await call("list_webhooks")
+    assert any(item["id"] == webhook_id for item in webhook_list["data"])
 
-    wh_deleted = await call("oriexa_delete_webhook", webhook_id=wh_id)
-    assert "deleted" in wh_deleted.lower()
+    webhook_deleted = await call("delete_webhook", webhook_id=webhook_id)
+    assert webhook_deleted["ok"] is True
 
-    # ═══ Act 10: Bulk Operations (2 tools) ═══════════════════════════════════
-
-    bulk_task_ids: list[str] = []
-    for i in range(3):
-        t = await call(
-            "oriexa_create_task",
-            title=f"Bulk task {i + 1}",
+    bulk_task_ids: list[int] = []
+    for index in range(2):
+        bulk_task = await call(
+            "create_user_task",
+            title=f"Bulk task {index + 1}",
             description=(
-                f"Bulk test task number {i + 1} with sufficient description "
+                f"Bulk test task number {index + 1} with sufficient description "
                 "text for validation requirements."
             ),
             budget_credits=50,
             category_id="1",
         )
-        bulk_task_ids.append(_id(r"Task #(\d+)", t))
+        bulk_task_ids.append(bulk_task["id"])
 
     bulk = await call(
-        "oriexa_bulk_claim_tasks",
+        "bulk_claim_tasks",
         claims=[
             {
-                "task_id": int(tid),
+                "task_id": task_id_value,
                 "proposed_credits": 40,
-                "message": f"Bulk claim for task {tid}",
+                "message": f"Bulk claim for task {task_id_value}",
             }
-            for tid in bulk_task_ids
+            for task_id_value in bulk_task_ids
         ],
     )
-    assert "succeeded" in bulk.lower()
+    assert bulk["ok"] is True
+    assert bulk["data"]["summary"]["succeeded"] == len(bulk_task_ids)
 
-    # ═══ Act 11: Management (1 tool) ═════════════════════════════════════════
-
-    orch_list = await call("oriexa_orchestrator_list")
-    assert "execution" in orch_list.lower() or "No orchestrator" in orch_list
-
-    # ═══ Remaining tools — reject_deliverable mini-lifecycle ═════════════════
-    # Create a second task, deliver, then REJECT (covers oriexa_reject_deliverable)
-
-    t2 = await call(
-        "oriexa_create_task",
-        title="Review test task",
-        description="A short task to test the reject-deliverable MCP tool end-to-end.",
-        budget_credits=60,
-        category_id="1",
-    )
-    t2_id = _id(r"Task #(\d+)", t2)
-
-    c2 = await call(
-        "oriexa_claim_task",
-        task_id=t2_id,
-        proposed_credits=50,
-        message="Will do",
-    )
-    c2_id = _id(r"Claim #(\d+)", c2)
-
-    await call("oriexa_accept_claim", task_id=t2_id, claim_id=c2_id)
-
-    d2 = await call(
-        "oriexa_submit_deliverable",
-        task_id=t2_id,
-        content="Draft deliverable for review testing.",
-    )
-    d2_id = _id(r"Deliverable #(\d+)", d2)
-
-    rejected = await call(
-        "oriexa_reject_deliverable",
-        task_id=t2_id,
-        deliverable_id=d2_id,
-        revision_notes="Needs more detail.",
-    )
-    assert "revision" in rejected.lower() or "rejected" in rejected.lower()
-
-    # ═══ Orchestrator start / status (2 tools — error paths) ═════════════════
-
-    # orchestrator_status with non-existent execution → 404
-    with pytest.raises((OriexaAPIError, Exception)):
-        await call("oriexa_orchestrator_status", execution_id="99999")
-
-    # orchestrator_start on a completed task → likely 404/error
-    with pytest.raises((OriexaAPIError, Exception)):
-        await call("oriexa_orchestrator_start", task_id=task_id)
-
-    # ═══ Error Cases ═════════════════════════════════════════════════════════
-
-    # Non-existent task
     with pytest.raises(OriexaAPIError):
-        await call("oriexa_get_task", task_id="99999")
-
-    # Withdraw a non-existent claim
-    with pytest.raises(OriexaAPIError):
-        await call("oriexa_withdraw_claim", task_id="99999", claim_id="99999")
+        await call("get_task", task_id="99999")

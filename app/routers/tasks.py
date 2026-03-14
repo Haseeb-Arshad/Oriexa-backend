@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, asc, desc, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.envelope import success_response
+from app.api.envelope import error_response, success_response
 from app.api.errors import (
     conflict_error,
     duplicate_claim_error,
@@ -46,6 +46,16 @@ from app.schemas.tasks import BrowseTasksParams, CreateTaskRequest
 from app.services.agent_workspaces import cleanup_workspace, sync_task_status
 from app.services.credits import process_task_completion
 from app.services.crypto import encrypt_key
+from app.services.marketplace import (
+    MarketplaceError,
+    accept_claim as marketplace_accept_claim,
+    create_claim as marketplace_create_claim,
+    create_task as marketplace_create_task,
+    request_revision as marketplace_request_revision,
+    send_message as marketplace_send_message,
+    submit_deliverable as marketplace_submit_deliverable,
+    accept_deliverable as marketplace_accept_deliverable,
+)
 from app.services.webhooks import dispatch_new_task_match, dispatch_webhook_event
 from app.api.events import event_broadcaster
 from app.orchestrator.legacy_bridge import ensure_legacy_execution
@@ -83,6 +93,13 @@ def _cleanup_task_workspace(task_id: int, reason: str) -> None:
         cleanup_workspace(task_id, reason=reason)
     except Exception:
         pass
+
+
+def _marketplace_error_response(error: MarketplaceError) -> JSONResponse:
+    legacy_code = {
+        "MAX_REVISIONS_REACHED": "MAX_REVISIONS",
+    }.get(error.code, error.code)
+    return error_response(error.status_code, legacy_code, error.message, error.suggestion)
 
 
 # ─── GET /api/v1/tasks — Browse tasks ────────────────────────────────────────
@@ -276,41 +293,27 @@ async def create_task(
         resp = validation_error(str(e), "Check field requirements and try again")
         return add_rate_limit_headers(resp, agent.rate_limit)
 
-    # Encrypt poster LLM key if provided
-    poster_llm_key_encrypted = None
-    if data.poster_llm_key:
-        try:
-            poster_llm_key_encrypted = encrypt_key(data.poster_llm_key)
-        except Exception:
-            pass
+    try:
+        result = await marketplace_create_task(
+            session,
+            poster_id=agent.operator_id,
+            title=data.title,
+            description=data.description,
+            requirements=data.requirements,
+            budget_credits=data.budget_credits,
+            category_id=data.category_id,
+            deadline=data.deadline,
+            max_revisions=data.max_revisions,
+            auto_review_enabled=data.auto_review_enabled,
+            poster_llm_key=data.poster_llm_key,
+            poster_llm_provider=data.poster_llm_provider,
+            poster_max_reviews=data.poster_max_reviews,
+            poster_notify_agent_id=agent.id,
+        )
+    except MarketplaceError as error:
+        return add_rate_limit_headers(_marketplace_error_response(error), agent.rate_limit)
 
-    task = Task(
-        poster_id=agent.operator_id,
-        title=data.title,
-        description=data.description,
-        requirements=data.requirements,
-        budget_credits=data.budget_credits,
-        category_id=data.category_id,
-        deadline=datetime.fromisoformat(data.deadline) if data.deadline else None,
-        max_revisions=data.max_revisions if data.max_revisions is not None else 2,
-        status="open",
-        auto_review_enabled=data.auto_review_enabled,
-        poster_llm_key_encrypted=poster_llm_key_encrypted,
-        poster_llm_provider=data.poster_llm_provider,
-        poster_max_reviews=data.poster_max_reviews,
-    )
-    session.add(task)
-    await session.flush()
-    await session.commit()
-    await session.refresh(task)
-
-    # Dispatch webhook for new task matching agents' categories
-    dispatch_new_task_match(task.id, task.category_id, {
-        "task_id": task.id,
-        "title": task.title,
-        "budget_credits": task.budget_credits,
-        "category_id": task.category_id,
-    })
+    task = await session.get(Task, result["task_id"])
 
     resp = success_response(
         {
@@ -473,92 +476,19 @@ async def create_claim(
         )
         return add_rate_limit_headers(resp, agent.rate_limit)
 
-    # Validate task exists and is open
-    result = await session.execute(
-        select(Task.id, Task.status, Task.budget_credits).where(Task.id == task_id).limit(1)
-    )
-    task = result.first()
+    try:
+        result = await marketplace_create_claim(
+            session,
+            task_id=task_id,
+            agent_id=agent.id,
+            agent_name=agent.name,
+            proposed_credits=data.proposed_credits,
+            message=data.message,
+        )
+    except MarketplaceError as error:
+        return add_rate_limit_headers(_marketplace_error_response(error), agent.rate_limit)
 
-    if not task:
-        resp = task_not_found_error(task_id)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.status != "open":
-        resp = task_not_found_error(task_id) if task.status == "cancelled" else \
-            conflict_error(
-                "TASK_NOT_OPEN",
-                f"Task {task_id} is not open (current status: {task.status})",
-                "This task has already been claimed. Browse open tasks with GET /api/v1/tasks?status=open",
-            )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if data.proposed_credits > task.budget_credits:
-        resp = invalid_credits_error(data.proposed_credits, task.budget_credits)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Check for duplicate claim (pending or accepted)
-    existing = await session.execute(
-        select(TaskClaim.id).where(
-            and_(
-                TaskClaim.task_id == task_id,
-                TaskClaim.agent_id == agent.id,
-                TaskClaim.status.in_(["pending", "accepted"]),
-            )
-        ).limit(1)
-    )
-    if existing.scalar_one_or_none() is not None:
-        resp = duplicate_claim_error(task_id)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Create the claim
-    claim = TaskClaim(
-        task_id=task_id,
-        agent_id=agent.id,
-        proposed_credits=data.proposed_credits,
-        message=data.message,
-        status="pending",
-    )
-    session.add(claim)
-    await session.flush()
-    await session.commit()
-    await session.refresh(claim)
-
-    # Dual-write: insert claim_proposal message
-    msg = TaskMessage(
-        task_id=task_id,
-        sender_type="agent",
-        sender_id=agent.id,
-        sender_name=agent.name,
-        content=data.message or f"Proposed {data.proposed_credits} credits",
-        message_type="claim_proposal",
-        claim_id=claim.id,
-        structured_data={
-            "proposed_credits": data.proposed_credits,
-            "message": data.message,
-        },
-    )
-    session.add(msg)
-    await session.flush()
-    await session.commit()
-
-    # Broadcast real-time event to task poster
-    poster_result = await session.execute(
-        select(Task.poster_id).where(Task.id == task_id).limit(1)
-    )
-    poster_row = poster_result.first()
-    if poster_row:
-        event_broadcaster.broadcast(poster_row.poster_id, "claim_created", {
-            "task_id": task_id,
-            "claim_id": claim.id,
-            "agent_id": claim.agent_id,
-            "proposed_credits": claim.proposed_credits,
-        })
-        event_broadcaster.broadcast(poster_row.poster_id, "message_created", {
-            "task_id": task_id,
-            "message_id": msg.id,
-            "sender_type": "agent",
-            "message_type": "claim_proposal",
-        })
+    claim = await session.get(TaskClaim, result["claim_id"])
 
     resp = success_response(
         {
@@ -705,97 +635,21 @@ async def accept_claim(
         )
         return add_rate_limit_headers(resp, agent.rate_limit)
 
-    # Validate task
-    result = await session.execute(
-        select(Task.id, Task.status, Task.poster_id).where(Task.id == task_id).limit(1)
-    )
-    task = result.first()
-    if not task:
-        resp = task_not_found_error(task_id)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.poster_id != agent.operator_id:
-        resp = forbidden_error(
-            "Only the task poster can accept claims",
-            "You must be the poster of this task to accept claims",
+    try:
+        result = await marketplace_accept_claim(
+            session,
+            task_id=task_id,
+            claim_id=claim_id,
+            poster_id=agent.operator_id,
+            poster_notify_agent_id=agent.id,
         )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.status != "open":
-        resp = conflict_error(
-            "TASK_NOT_OPEN",
-            f"Task {task_id} is not open (status: {task.status})",
-            "Only open tasks can have claims accepted",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Validate claim
-    claim_result = await session.execute(
-        select(TaskClaim).where(
-            and_(
-                TaskClaim.id == claim_id,
-                TaskClaim.task_id == task_id,
-                TaskClaim.status == "pending",
-            )
-        ).limit(1)
-    )
-    claim = claim_result.scalar_one_or_none()
-    if not claim:
-        resp = conflict_error(
-            "CLAIM_NOT_FOUND",
-            f"Claim {claim_id} not found or not pending on task {task_id}",
-            "Check pending claims with GET /api/v1/tasks/:id/claims",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Accept claim, reject others, update task (optimistic lock)
-    updated = await session.execute(
-        update(Task)
-        .where(and_(Task.id == task_id, Task.status == "open"))
-        .values(
-            status="claimed",
-            claimed_by_agent_id=claim.agent_id,
-            updated_at=datetime.now(timezone.utc),
-        )
-        .returning(Task.id)
-    )
-    if not updated.first():
-        await session.rollback()
-        resp = conflict_error(
-            "TASK_NOT_OPEN",
-            f"Task {task_id} is no longer open",
-            "Another claim was accepted concurrently",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    await session.execute(
-        update(TaskClaim).where(TaskClaim.id == claim_id).values(status="accepted")
-    )
-    await session.execute(
-        update(TaskClaim)
-        .where(
-            and_(
-                TaskClaim.task_id == task_id,
-                TaskClaim.id != claim_id,
-                TaskClaim.status == "pending",
-            )
-        )
-        .values(status="rejected")
-    )
-    await session.commit()
-    _sync_workspace_status(task_id, "claimed")
-
-    # Dispatch webhooks
-    dispatch_webhook_event(claim.agent_id, "claim.accepted", {
-        "task_id": task_id,
-        "claim_id": claim_id,
-        "agent_id": claim.agent_id,
-    })
+    except MarketplaceError as error:
+        return add_rate_limit_headers(_marketplace_error_response(error), agent.rate_limit)
 
     resp = success_response({
         "task_id": task_id,
         "claim_id": claim_id,
-        "agent_id": claim.agent_id,
+        "agent_id": result["agent_id"],
         "status": "accepted",
         "message": f"Claim {claim_id} accepted. Task {task_id} is now claimed.",
     })
@@ -1002,88 +856,17 @@ async def submit_deliverable(
         resp = validation_error(str(e), "Include content in request body (string, max 50000 chars)")
         return add_rate_limit_headers(resp, agent.rate_limit)
 
-    # Validate task
-    result = await session.execute(
-        select(Task.id, Task.status, Task.claimed_by_agent_id, Task.max_revisions)
-        .where(Task.id == task_id)
-        .limit(1)
-    )
-    task = result.first()
-
-    if not task:
-        resp = task_not_found_error(task_id)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.status not in ("claimed", "in_progress"):
-        suggestion = (
-            f"Claim the task first with POST /api/v1/tasks/{task_id}/claims"
-            if task.status == "open"
-            else f"Task {task_id} cannot accept deliverables in status: {task.status}"
+    try:
+        result = await marketplace_submit_deliverable(
+            session,
+            task_id=task_id,
+            agent_id=agent.id,
+            content=data.content,
         )
-        resp = invalid_status_error(task_id, task.status, suggestion)
-        return add_rate_limit_headers(resp, agent.rate_limit)
+    except MarketplaceError as error:
+        return add_rate_limit_headers(_marketplace_error_response(error), agent.rate_limit)
 
-    if task.claimed_by_agent_id != agent.id:
-        resp = forbidden_error(
-            f"Task {task_id} is not claimed by your agent",
-            "You can only deliver to tasks you have claimed",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Get current revision number
-    latest = await session.execute(
-        select(Deliverable.revision_number)
-        .where(
-            and_(
-                Deliverable.task_id == task_id,
-                Deliverable.agent_id == agent.id
-            )
-        )
-        .order_by(desc(Deliverable.revision_number))
-        .limit(1)
-    )
-    latest_rev = latest.scalar_one_or_none()
-    next_revision = (latest_rev + 1) if latest_rev is not None else 1
-
-    # Check max revisions (revision 1 = original, 2..max_revisions+1 = revisions)
-    if next_revision > task.max_revisions + 1:
-        resp = max_revisions_error(task_id, next_revision - 1, task.max_revisions)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    deliverable = Deliverable(
-        task_id=task_id,
-        agent_id=agent.id,
-        content=data.content,
-        status="submitted",
-        revision_number=next_revision,
-    )
-    session.add(deliverable)
-
-    await session.execute(
-        update(Task)
-        .where(Task.id == task_id)
-        .values(status="delivered", updated_at=datetime.now(timezone.utc))
-    )
-    await session.flush()
-    await session.commit()
-    _sync_workspace_status(task_id, "delivered")
-    await session.refresh(deliverable)
-
-    # Broadcast real-time event to task poster
-    poster_result = await session.execute(
-        select(Task.poster_id).where(Task.id == task_id).limit(1)
-    )
-    poster_row = poster_result.first()
-    if poster_row:
-        event_broadcaster.broadcast(poster_row.poster_id, "deliverable_submitted", {
-            "task_id": task_id,
-            "deliverable_id": deliverable.id,
-            "revision_number": deliverable.revision_number,
-        })
-        event_broadcaster.broadcast(poster_row.poster_id, "task_updated", {
-            "task_id": task_id,
-            "status": "delivered",
-        })
+    deliverable = await session.get(Deliverable, result["deliverable_id"])
 
     resp = success_response(
         {
@@ -1127,105 +910,23 @@ async def accept_deliverable(
         )
         return add_rate_limit_headers(resp, agent.rate_limit)
 
-    # Validate task
-    result = await session.execute(
-        select(Task.id, Task.status, Task.poster_id, Task.budget_credits, Task.claimed_by_agent_id)
-        .where(Task.id == task_id)
-        .limit(1)
-    )
-    task = result.first()
-    if not task:
-        resp = task_not_found_error(task_id)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.poster_id != agent.operator_id:
-        resp = forbidden_error(
-            "Only the task poster can accept deliverables",
-            "You must be the poster of this task to accept deliverables",
+    try:
+        result = await marketplace_accept_deliverable(
+            session,
+            task_id=task_id,
+            deliverable_id=deliverable_id,
+            poster_id=agent.operator_id,
+            poster_notify_agent_id=agent.id,
         )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.status != "delivered":
-        resp = conflict_error(
-            "INVALID_STATUS",
-            f"Task {task_id} is not in delivered state (status: {task.status})",
-            "Wait for the agent to submit a deliverable",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Validate deliverable
-    del_result = await session.execute(
-        select(Deliverable).where(Deliverable.id == deliverable_id).limit(1)
-    )
-    deliverable = del_result.scalar_one_or_none()
-    if not deliverable or deliverable.task_id != task_id:
-        resp = conflict_error(
-            "DELIVERABLE_NOT_FOUND",
-            f"Deliverable {deliverable_id} not found on task {task_id}",
-            "Check deliverables for this task",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Optimistic lock
-    updated = await session.execute(
-        update(Task)
-        .where(and_(Task.id == task_id, Task.status == "delivered"))
-        .values(status="completed", updated_at=datetime.now(timezone.utc))
-        .returning(Task.id)
-    )
-    if not updated.first():
-        await session.rollback()
-        resp = conflict_error(
-            "INVALID_STATUS",
-            f"Task {task_id} is no longer in delivered state",
-            "The deliverable may have already been accepted",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    await session.execute(
-        update(Deliverable).where(Deliverable.id == deliverable_id).values(status="accepted")
-    )
-    await session.commit()
-
-    # Process credits
-    credit_result = None
-    if task.claimed_by_agent_id:
-        agent_data = await session.execute(
-            select(Agent.operator_id).where(Agent.id == task.claimed_by_agent_id).limit(1)
-        )
-        agent_row = agent_data.first()
-        if agent_row:
-            credit_result = await process_task_completion(
-                session, agent_row.operator_id, task.budget_credits, task_id
-            )
-            await session.execute(
-                update(Agent)
-                .where(Agent.id == task.claimed_by_agent_id)
-                .values(
-                    tasks_completed=Agent.tasks_completed + 1,
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-            await session.commit()
-
-    _sync_workspace_status(task_id, "completed")
-    _cleanup_task_workspace(task_id, "completed")
-
-    # Dispatch webhook
-    if task.claimed_by_agent_id:
-        dispatch_webhook_event(task.claimed_by_agent_id, "deliverable.accepted", {
-            "task_id": task_id,
-            "deliverable_id": deliverable_id,
-            "credits_paid": credit_result["payment"] if credit_result else 0,
-            "platform_fee": credit_result["fee"] if credit_result else 0,
-        })
+    except MarketplaceError as error:
+        return add_rate_limit_headers(_marketplace_error_response(error), agent.rate_limit)
 
     resp = success_response({
         "task_id": task_id,
         "deliverable_id": deliverable_id,
         "status": "completed",
-        "credits_paid": credit_result["payment"] if credit_result else 0,
-        "platform_fee": credit_result["fee"] if credit_result else 0,
+        "credits_paid": result["credits_paid"],
+        "platform_fee": result["platform_fee"],
         "message": f"Deliverable accepted. Task {task_id} completed.",
     })
     return add_rate_limit_headers(resp, agent.rate_limit)
@@ -1260,69 +961,17 @@ async def request_revision(
         resp = validation_error("deliverable_id is required", "Include deliverable_id in request body")
         return add_rate_limit_headers(resp, agent.rate_limit)
 
-    # Validate task
-    result = await session.execute(
-        select(Task.id, Task.status, Task.poster_id, Task.max_revisions, Task.claimed_by_agent_id)
-        .where(Task.id == task_id)
-        .limit(1)
-    )
-    task = result.first()
-    if not task:
-        resp = task_not_found_error(task_id)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.poster_id != agent.operator_id:
-        resp = forbidden_error(
-            "Only the task poster can request revisions",
-            "You must be the poster of this task to request revisions",
+    try:
+        await marketplace_request_revision(
+            session,
+            task_id=task_id,
+            deliverable_id=deliverable_id,
+            poster_id=agent.operator_id,
+            notes=revision_notes,
+            poster_notify_agent_id=agent.id,
         )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.status != "delivered":
-        resp = conflict_error(
-            "INVALID_STATUS",
-            f"Task {task_id} is not in delivered state (status: {task.status})",
-            "Revisions can only be requested on delivered tasks",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Validate deliverable
-    del_result = await session.execute(
-        select(Deliverable).where(Deliverable.id == deliverable_id).limit(1)
-    )
-    deliverable = del_result.scalar_one_or_none()
-    if not deliverable or deliverable.task_id != task_id:
-        resp = conflict_error(
-            "DELIVERABLE_NOT_FOUND",
-            f"Deliverable {deliverable_id} not found on task {task_id}",
-            "Check deliverables for this task",
-        )
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if deliverable.revision_number >= task.max_revisions + 1:
-        resp = max_revisions_error(task_id, deliverable.revision_number, task.max_revisions)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    # Update deliverable and task
-    await session.execute(
-        update(Deliverable)
-        .where(Deliverable.id == deliverable_id)
-        .values(status="revision_requested", revision_notes=revision_notes)
-    )
-    await session.execute(
-        update(Task)
-        .where(Task.id == task_id)
-        .values(status="in_progress", updated_at=datetime.now(timezone.utc))
-    )
-    await session.commit()
-    _sync_workspace_status(task_id, "in_progress")
-
-    if task.claimed_by_agent_id:
-        dispatch_webhook_event(task.claimed_by_agent_id, "deliverable.revision_requested", {
-            "task_id": task_id,
-            "deliverable_id": deliverable_id,
-            "revision_notes": revision_notes,
-        })
+    except MarketplaceError as error:
+        return add_rate_limit_headers(_marketplace_error_response(error), agent.rate_limit)
 
     resp = success_response({
         "task_id": task_id,
@@ -2025,45 +1674,23 @@ async def agent_send_message(
     session: AsyncSession = Depends(get_db),
 ):
     """Agent sends a message or structured question in the task conversation."""
-    result = await session.execute(
-        select(Task.id, Task.status, Task.poster_id).where(Task.id == task_id).limit(1)
-    )
-    task = result.first()
-    if not task:
-        resp = task_not_found_error(task_id)
-        return add_rate_limit_headers(resp, agent.rate_limit)
-
-    if task.status in ("completed", "cancelled"):
-        resp = conflict_error(
-            "TASK_CLOSED",
-            f"Task {task_id} is {task.status}",
-            "Cannot send messages on completed/cancelled tasks",
+    try:
+        result = await marketplace_send_message(
+            session,
+            task_id=task_id,
+            sender_type="agent",
+            sender_id=agent.id,
+            sender_name=agent.name,
+            content=data.content,
+            message_type=data.message_type,
+            parent_id=data.parent_id,
+            structured_data=data.structured_data,
+            notify_agent_id=agent.id,
         )
-        return add_rate_limit_headers(resp, agent.rate_limit)
+    except MarketplaceError as error:
+        return add_rate_limit_headers(_marketplace_error_response(error), agent.rate_limit)
 
-    msg = TaskMessage(
-        task_id=task_id,
-        sender_type="agent",
-        sender_id=agent.id,
-        sender_name=agent.name,
-        content=data.content,
-        message_type=data.message_type,
-        structured_data=data.structured_data,
-        parent_id=data.parent_id,
-    )
-    session.add(msg)
-    await session.flush()
-    await session.commit()
-    await session.refresh(msg)
-
-    # Broadcast to poster
-    event_broadcaster.broadcast(task.poster_id, "message_created", {
-        "task_id": task_id,
-        "message_id": msg.id,
-        "sender_type": "agent",
-        "sender_name": agent.name,
-        "message_type": data.message_type,
-    })
+    msg = await session.get(TaskMessage, result["message_id"])
 
     resp = success_response({
         "id": msg.id,

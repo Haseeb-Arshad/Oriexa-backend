@@ -7,6 +7,16 @@ from app.db.engine import get_db
 from app.db.models import User, Task, TaskClaim, Category, Deliverable, Agent, SubmissionAttempt, CreditTransaction, TaskMessage
 from app.auth.user_auth import get_current_user_id
 from app.services.agent_workspaces import cleanup_workspace, sync_task_status
+from app.services.marketplace import (
+    MarketplaceError,
+    accept_claim as marketplace_accept_claim,
+    accept_deliverable as marketplace_accept_deliverable,
+    answer_question as marketplace_answer_question,
+    cancel_task as marketplace_cancel_task,
+    create_task as marketplace_create_task,
+    request_revision as marketplace_request_revision,
+    send_message as marketplace_send_message,
+)
 from app.services.webhooks import dispatch_new_task_match, dispatch_webhook_event
 from app.services.reputation import compute_reputation_tier
 from app.api.events import event_broadcaster
@@ -26,6 +36,10 @@ def _cleanup_task_workspace(task_id: int, reason: str) -> None:
         cleanup_workspace(task_id, reason=reason)
     except Exception:
         pass
+
+
+def _raise_marketplace_error(error: MarketplaceError) -> None:
+    raise HTTPException(status_code=error.status_code, detail=error.message)
 
 @router.get("/profile")
 async def get_profile(
@@ -283,59 +297,31 @@ async def create_user_task(
     session: AsyncSession = Depends(get_db)
 ):
     from app.schemas.tasks import CreateTaskRequest
-    from app.services.crypto import encrypt_key
     try:
         data = CreateTaskRequest(**request)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Encrect LLM key if provided
-    poster_llm_key_encrypted = None
-    if data.poster_llm_key:
-        try:
-            poster_llm_key_encrypted = encrypt_key(data.poster_llm_key)
-        except Exception:
-            pass
+    try:
+        result = await marketplace_create_task(
+            session,
+            poster_id=user_id,
+            title=data.title,
+            description=data.description,
+            requirements=data.requirements,
+            budget_credits=data.budget_credits,
+            category_id=data.category_id,
+            deadline=data.deadline,
+            max_revisions=data.max_revisions,
+            auto_review_enabled=data.auto_review_enabled,
+            poster_llm_key=data.poster_llm_key,
+            poster_llm_provider=data.poster_llm_provider,
+            poster_max_reviews=data.poster_max_reviews,
+        )
+    except MarketplaceError as error:
+        _raise_marketplace_error(error)
 
-    task = Task(
-        poster_id=user_id,
-        title=data.title,
-        description=data.description,
-        requirements=data.requirements,
-        budget_credits=data.budget_credits,
-        category_id=data.category_id,
-        deadline=datetime.fromisoformat(data.deadline) if data.deadline else None,
-        max_revisions=data.max_revisions if data.max_revisions is not None else 2,
-        status="open",
-        auto_review_enabled=data.auto_review_enabled,
-        poster_llm_key_encrypted=poster_llm_key_encrypted,
-        poster_llm_provider=data.poster_llm_provider,
-        poster_max_reviews=data.poster_max_reviews,
-    )
-    session.add(task)
-    await session.flush() # Get task.id
-
-    await session.commit()
-    await session.refresh(task)
-
-    # Dispatch webhooks: notify agents about new task match
-    dispatch_new_task_match(task.id, task.category_id, {
-        "id": task.id,
-        "title": task.title,
-        "description": task.description,
-        "budget_credits": task.budget_credits,
-        "category_id": task.category_id,
-        "created_at": task.created_at.isoformat().replace("+00:00", "Z"),
-    })
-
-    # Broadcast real-time event
-    event_broadcaster.broadcast(user_id, "task_created", {
-        "task_id": task.id,
-        "title": task.title,
-        "status": "open",
-    })
-
-    return {"id": task.id}
+    return {"id": result["task_id"]}
 
 
 @router.post("/tasks/{task_id}/accept-claim")
@@ -349,73 +335,15 @@ async def user_accept_claim(
     if not claim_id:
         raise HTTPException(status_code=400, detail="claim_id is required")
 
-    # Verify task ownership and status
-    result = await session.execute(
-        select(Task).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
-    )
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found or not yours")
-    if task.status != "open":
-        raise HTTPException(status_code=400, detail=f"Task is not open (status: {task.status})")
-
-    # Verify claim
-    claim_result = await session.execute(
-        select(TaskClaim).where(
-            TaskClaim.id == claim_id,
-            TaskClaim.task_id == task_id,
-            TaskClaim.status == "pending"
-        ).limit(1)
-    )
-    claim = claim_result.scalar_one_or_none()
-    if not claim:
-        raise HTTPException(status_code=404, detail="Claim not found or not pending")
-
-    # Accept this claim
-    await session.execute(
-        update(TaskClaim).where(TaskClaim.id == claim_id).values(status="accepted")
-    )
-    # Reject others
-    await session.execute(
-        update(TaskClaim)
-        .where(TaskClaim.task_id == task_id, TaskClaim.id != claim_id, TaskClaim.status == "pending")
-        .values(status="rejected")
-    )
-    # Escrow credits from poster now that claim is accepted
-    from app.services.credits import deduct_credits
-    await deduct_credits(
-        session,
-        user_id,
-        task.budget_credits,
-        "payment",
-        f"Escrow for task: {task.title}",
-        task.id
-    )
-
-    # Update task status to 'claimed' so no more claims can be submitted
-    task.status = "claimed"
-    task.claimed_by_agent_id = claim.agent_id
-    task.updated_at = datetime.now(timezone.utc)
-    await session.commit()
-    _sync_workspace_status(task_id, "claimed")
-
-    # Dispatch webhooks
-    dispatch_webhook_event(claim.agent_id, "claim.accepted", {
-        "task_id": task_id,
-        "claim_id": claim_id,
-        "agent_id": claim.agent_id,
-    })
-
-    # Broadcast real-time event to poster
-    event_broadcaster.broadcast(user_id, "claim_updated", {
-        "task_id": task_id,
-        "claim_id": claim_id,
-        "status": "accepted",
-    })
-    event_broadcaster.broadcast(user_id, "task_updated", {
-        "task_id": task_id,
-        "status": "claimed",
-    })
+    try:
+        await marketplace_accept_claim(
+            session,
+            task_id=task_id,
+            claim_id=claim_id,
+            poster_id=user_id,
+        )
+    except MarketplaceError as error:
+        _raise_marketplace_error(error)
 
     return {"success": True}
 
@@ -431,58 +359,15 @@ async def user_accept_deliverable(
     if not deliverable_id:
         raise HTTPException(status_code=400, detail="deliverable_id is required")
 
-    # Verify task
-    result = await session.execute(
-        select(Task).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
-    )
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found or not yours")
-    if task.status != "delivered":
-        raise HTTPException(status_code=400, detail=f"Task is not in delivered state (status: {task.status})")
-
-    # Validate deliverable
-    del_result = await session.execute(
-        select(Deliverable).where(Deliverable.id == deliverable_id, Deliverable.task_id == task_id).limit(1)
-    )
-    deliverable = del_result.scalar_one_or_none()
-    if not deliverable:
-        raise HTTPException(status_code=404, detail="Deliverable not found")
-
-    # Accept deliverable
-    deliverable.status = "accepted"
-    task.status = "completed"
-    task.updated_at = datetime.now(timezone.utc)
-
-    # Process credits
-    from app.services.credits import process_task_completion
-    if task.claimed_by_agent_id:
-        agent_data = await session.execute(
-            select(Agent).where(Agent.id == task.claimed_by_agent_id).limit(1)
+    try:
+        await marketplace_accept_deliverable(
+            session,
+            task_id=task_id,
+            deliverable_id=deliverable_id,
+            poster_id=user_id,
         )
-        agent = agent_data.scalar_one_or_none()
-        if agent:
-            await process_task_completion(session, agent.operator_id, task.budget_credits, task_id)
-            agent.tasks_completed += 1
-            agent.updated_at = datetime.now(timezone.utc)
-
-    await session.commit()
-    _sync_workspace_status(task_id, "completed")
-    _cleanup_task_workspace(task_id, "completed")
-
-    # Dispatch webhook
-    if task.claimed_by_agent_id:
-        dispatch_webhook_event(task.claimed_by_agent_id, "deliverable.accepted", {
-            "task_id": task_id,
-            "deliverable_id": deliverable_id,
-            "credits_paid": task.budget_credits,
-        })
-
-    # Broadcast real-time event
-    event_broadcaster.broadcast(user_id, "task_updated", {
-        "task_id": task_id,
-        "status": "completed",
-    })
+    except MarketplaceError as error:
+        _raise_marketplace_error(error)
 
     return {"success": True}
 
@@ -499,51 +384,16 @@ async def user_request_revision(
     if not deliverable_id:
         raise HTTPException(status_code=400, detail="deliverable_id is required")
 
-    # Verify task
-    result = await session.execute(
-        select(Task).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
-    )
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found or not yours")
-    if task.status != "delivered":
-        raise HTTPException(status_code=400, detail="Task is not in delivered state")
-
-    # Validate deliverable
-    del_result = await session.execute(
-        select(Deliverable).where(Deliverable.id == deliverable_id, Deliverable.task_id == task_id).limit(1)
-    )
-    deliverable = del_result.scalar_one_or_none()
-    if not deliverable:
-        raise HTTPException(status_code=404, detail="Deliverable not found")
-
-    if deliverable.revision_number >= task.max_revisions + 1:
-        raise HTTPException(status_code=400, detail="Maximum revisions reached")
-
-    # Mark deliverable as revision_requested
-    deliverable.status = "revision_requested"
-    deliverable.revision_notes = notes
-    
-    # Move task back to in_progress
-    task.status = "in_progress"
-    task.updated_at = datetime.now(timezone.utc)
-
-    await session.commit()
-    _sync_workspace_status(task_id, "in_progress")
-
-    # Dispatch webhook
-    if task.claimed_by_agent_id:
-        dispatch_webhook_event(task.claimed_by_agent_id, "deliverable.revision_requested", {
-            "task_id": task_id,
-            "deliverable_id": deliverable_id,
-            "revision_notes": notes,
-        })
-
-    # Broadcast real-time event
-    event_broadcaster.broadcast(user_id, "task_updated", {
-        "task_id": task_id,
-        "status": "in_progress",
-    })
+    try:
+        await marketplace_request_revision(
+            session,
+            task_id=task_id,
+            deliverable_id=deliverable_id,
+            poster_id=user_id,
+            notes=notes,
+        )
+    except MarketplaceError as error:
+        _raise_marketplace_error(error)
 
     return {"success": True}
 
@@ -558,46 +408,14 @@ async def cancel_task(
     """Cancel a task. Can be used on open, claimed, in_progress, or delivered tasks.
     Refunds escrowed credits if the task was already claimed.
     """
-    result = await session.execute(
-        select(Task).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
-    )
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found or not yours")
-
-    if task.status in ("completed", "cancelled"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Task is already {task.status} and cannot be cancelled",
+    try:
+        await marketplace_cancel_task(
+            session,
+            task_id=task_id,
+            poster_id=user_id,
         )
-
-    # Refund escrowed credits if task was claimed (credits were deducted on accept-claim)
-    if task.status in ("claimed", "in_progress", "delivered") and task.budget_credits > 0:
-        from app.services.credits import _add_credits
-        await _add_credits(
-            session, user_id, task.budget_credits, "refund",
-            f"Refund for cancelled task: {task.title}", task.id,
-        )
-
-    # Reject any pending claims
-    await session.execute(
-        update(TaskClaim)
-        .where(TaskClaim.task_id == task_id, TaskClaim.status == "pending")
-        .values(status="rejected")
-    )
-
-    # Cancel the task
-    task.status = "cancelled"
-    task.updated_at = datetime.now(timezone.utc)
-    await session.commit()
-    _sync_workspace_status(task_id, "cancelled")
-    _cleanup_task_workspace(task_id, "cancelled")
-
-    # Broadcast real-time event
-    event_broadcaster.broadcast(user_id, "task_updated", {
-        "task_id": task_id,
-        "status": "cancelled",
-    })
+    except MarketplaceError as error:
+        _raise_marketplace_error(error)
 
     return {"success": True, "message": f"Task #{task_id} has been cancelled"}
 
@@ -698,54 +516,27 @@ async def send_task_message(
     session: AsyncSession = Depends(get_db),
 ):
     """Poster sends a message in the task conversation."""
-    # Verify ownership
-    result = await session.execute(
-        select(Task.id, Task.status).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
-    )
-    task = result.first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    if task.status in ("completed", "cancelled"):
-        raise HTTPException(status_code=400, detail="Cannot send messages on completed/cancelled tasks")
-
-    # Get user name
     user_result = await session.execute(
         select(User.name).where(User.id == user_id).limit(1)
     )
     user_name = user_result.scalar_one_or_none() or "Poster"
 
-    msg = TaskMessage(
-        task_id=task_id,
-        sender_type="poster",
-        sender_id=user_id,
-        sender_name=user_name,
-        content=request.content,
-        message_type=request.message_type,
-        parent_id=request.parent_id,
-        structured_data=request.structured_data,
-    )
-    session.add(msg)
-    await session.flush()
+    try:
+        result = await marketplace_send_message(
+            session,
+            task_id=task_id,
+            sender_type="poster",
+            sender_id=user_id,
+            sender_name=user_name,
+            content=request.content,
+            message_type=request.message_type,
+            parent_id=request.parent_id,
+            structured_data=request.structured_data,
+        )
+    except MarketplaceError as error:
+        _raise_marketplace_error(error)
 
-    # Bump updated_at so polling agents know to re-evaluate this task
-    task_upd = await session.execute(
-        select(Task).where(Task.id == task_id).limit(1)
-    )
-    task_obj = task_upd.scalar_one_or_none()
-    if task_obj:
-        task_obj.updated_at = datetime.now(timezone.utc)
-
-    await session.commit()
-    await session.refresh(msg)
-
-    # Broadcast SSE
-    event_broadcaster.broadcast(user_id, "message_created", {
-        "task_id": task_id,
-        "message_id": msg.id,
-        "sender_type": "poster",
-        "message_type": msg.message_type,
-    })
+    msg = await session.get(TaskMessage, result["message_id"])
 
     return {
         "id": msg.id,
@@ -767,91 +558,25 @@ async def respond_to_question(
     session: AsyncSession = Depends(get_db),
 ):
     """Poster responds to a structured question from an agent."""
-    # Verify ownership
-    result = await session.execute(
-        select(Task.id).where(Task.id == task_id, Task.poster_id == user_id).limit(1)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    # Fetch the question message
-    msg_result = await session.execute(
-        select(TaskMessage).where(
-            TaskMessage.id == message_id,
-            TaskMessage.task_id == task_id,
-            TaskMessage.message_type == "question",
-        ).limit(1)
-    )
-    question = msg_result.scalar_one_or_none()
-    if not question:
-        raise HTTPException(status_code=404, detail="Question not found")
-
-    # Update structured_data with the response
-    responded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    updated_data = dict(question.structured_data or {})
-    updated_data["response"] = request.response
-    if request.option_index is not None:
-        updated_data["selected_option"] = request.option_index
-    updated_data["responded_at"] = responded_at
-    question.structured_data = updated_data
-
-    # Sync answer back into task.agent_remarks so the scout agent detects it
-    # on re-evaluation, then bump updated_at to trigger re-evaluation polling.
-    task_result = await session.execute(
-        select(Task).where(Task.id == task_id).limit(1)
-    )
-    task = task_result.scalar_one_or_none()
-    if task:
-        question_id = (question.structured_data or {}).get("question_id", "")
-        agent_id = question.sender_id
-        if question_id and agent_id and task.agent_remarks:
-            # Find the most-recent remark from the same agent and update the
-            # matching question's answer field in-place
-            updated_remarks = list(task.agent_remarks)
-            for remark in reversed(updated_remarks):
-                if remark.get("agent_id") != agent_id:
-                    continue
-                qs = (remark.get("evaluation") or {}).get("questions", [])
-                for q in qs:
-                    if q.get("id") == question_id and not q.get("answer"):
-                        q["answer"] = request.response
-                        q["answered_at"] = responded_at
-                        break
-                else:
-                    continue
-                break
-            task.agent_remarks = updated_remarks
-        # Bump updated_at so the scout agent's "task unchanged" guard is cleared
-        task.updated_at = datetime.now(timezone.utc)
-
-    # Create a reply message for the conversation timeline
     user_result = await session.execute(
         select(User.name).where(User.id == user_id).limit(1)
     )
     user_name = user_result.scalar_one_or_none() or "Poster"
 
-    reply = TaskMessage(
-        task_id=task_id,
-        sender_type="poster",
-        sender_id=user_id,
-        sender_name=user_name,
-        content=request.response,
-        message_type="text",
-        parent_id=message_id,
-    )
-    session.add(reply)
-    await session.flush()
-    await session.commit()
-    await session.refresh(reply)
+    try:
+        result = await marketplace_answer_question(
+            session,
+            task_id=task_id,
+            message_id=message_id,
+            poster_id=user_id,
+            poster_name=user_name,
+            response=request.response,
+            option_index=request.option_index,
+        )
+    except MarketplaceError as error:
+        _raise_marketplace_error(error)
 
-    event_broadcaster.broadcast(user_id, "message_created", {
-        "task_id": task_id,
-        "message_id": reply.id,
-        "sender_type": "poster",
-        "message_type": "text",
-    })
-
-    return {"success": True, "reply_id": reply.id}
+    return {"success": True, "reply_id": result["message_id"]}
 
 
 class EvaluationAnswerItem(BaseModel):
