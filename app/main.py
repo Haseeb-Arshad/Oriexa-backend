@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import json
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -91,18 +91,38 @@ async def lifespan(app: FastAPI):
     else:
         orch_logger.warning("ORIEXA_API_KEY not set — orchestrator daemons disabled")
 
-    # Start MCP session manager if available
-    mcp_ctx = None
+    # Start public MCP session managers if available
+    mcp_ctx: AsyncExitStack | None = None
+    mcp_client_started = False
     try:
-        from oriexa_mcp.server import mcp as mcp_server, _client as mcp_client
+        from oriexa_mcp.server import _client as mcp_client, external_mcp, public_mcp
+
+        # Ensure the HTTP mounts have created their session managers before startup.
+        public_mcp.streamable_http_app()
+        external_mcp.streamable_http_app()
+
         await mcp_client.start()
-        mcp_ctx = mcp_server.session_manager.run()
+        mcp_client_started = True
+        mcp_ctx = AsyncExitStack()
         await mcp_ctx.__aenter__()
-        orch_logger.info("MCP session manager started")
+        await mcp_ctx.enter_async_context(public_mcp.session_manager.run())
+        await mcp_ctx.enter_async_context(external_mcp.session_manager.run())
+        orch_logger.info("Public MCP session managers started")
     except ImportError:
         pass
     except Exception as e:
-        orch_logger.warning(f"MCP session manager failed to start: {e}")
+        orch_logger.warning("MCP session managers failed to start: %s", e)
+        if mcp_ctx is not None:
+            try:
+                await mcp_ctx.__aexit__(type(e), e, e.__traceback__)
+            except Exception:
+                pass
+            mcp_ctx = None
+        if mcp_client_started:
+            try:
+                await mcp_client.close()
+            except Exception:
+                pass
 
     yield
 

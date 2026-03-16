@@ -113,7 +113,28 @@ def _handle_marketplace_error(actor: ExternalActorContext, exc: MarketplaceError
     return _fail(actor, exc.status_code, exc.code, exc.message, exc.suggestion)
 
 
+def _forwarded_header(request: Request, name: str) -> str | None:
+    raw = request.headers.get(name)
+    if not raw:
+        return None
+    return raw.split(",")[0].strip() or None
+
+
 def _base_origin(request: Request) -> str:
+    forwarded_proto = _forwarded_header(request, "x-forwarded-proto") or request.url.scheme
+    forwarded_host = _forwarded_header(request, "x-forwarded-host")
+
+    if not forwarded_host:
+        host = _forwarded_header(request, "host") or request.url.netloc
+        port = _forwarded_header(request, "x-forwarded-port")
+        default_port = "443" if forwarded_proto == "https" else "80"
+        if host and port and ":" not in host and port != default_port:
+            host = f"{host}:{port}"
+        forwarded_host = host
+
+    if forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
     return str(request.base_url).rstrip("/")
 
 
