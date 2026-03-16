@@ -69,6 +69,8 @@ NEXT15_SCAFFOLD_COMMAND = (
 )
 SCAFFOLD_TIMEOUT_SECONDS = int(os.environ.get("SCAFFOLD_TIMEOUT_SECONDS", "7200"))
 MAX_CODING_ITERATIONS = int(os.environ.get("MAX_CODING_ITERATIONS", "12"))
+MAX_CODER_FAILURE_REPEATS = int(os.environ.get("MAX_CODER_FAILURE_REPEATS", "4"))
+DEFAULT_STATIC_TEST_COMMAND = 'echo "Static project verification passed"'
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -316,22 +318,188 @@ GENERIC_STEP_PATTERNS = (
     "build the project",
 )
 
+_FOCUS_NOISE_PATTERNS = (
+    r"\b(?:i|we)\s+(?:want|need|would like|wish)\s+you\s+to\s+"
+    r"(?:create|build|implement|design|develop|make|finish)\s+(?:a|an|the)?\b",
+    r"\b(?:can|could|would)\s+you\s+(?:please\s+)?"
+    r"(?:create|build|implement|design|develop|make|finish)\s+(?:a|an|the)?\b",
+    r"\bplease\s+(?:create|build|implement|design|develop|make|finish)\s+(?:a|an|the)?\b",
+    r"\b(?:create|build|implement|design|develop|make|finish)\s+(?:me\s+)?(?:a|an|the)?\b",
+)
 
-def _summarize_focus(*parts: str, max_words: int = 8) -> str:
-    text = " ".join(part.strip() for part in parts if part).strip()
-    if not text:
-        return "the requested experience"
+_STATIC_HINT_KEYWORDS = (
+    "vanilla js",
+    "plain html",
+    "plain css",
+    "plain javascript",
+    "no framework",
+    "single html",
+    "static site",
+)
+
+_SIMPLE_BROWSER_APP_KEYWORDS = (
+    "tic-tac-toe",
+    "tic tac toe",
+    "memory game",
+    "snake game",
+    "pong",
+    "browser game",
+    "simple game",
+    "calculator",
+    "counter",
+    "timer",
+    "countdown",
+    "quiz",
+)
+
+_NEXT_REQUIRED_KEYWORDS = (
+    "next.js",
+    "nextjs",
+    "app router",
+    "server action",
+    "route handler",
+    "api route",
+    "middleware",
+    "server-side",
+    "ssr",
+)
+
+_COMPLEX_APP_KEYWORDS = (
+    "dashboard",
+    "auth",
+    "login",
+    "signup",
+    "database",
+    "postgres",
+    "prisma",
+    "api",
+    "backend",
+    "server",
+    "upload",
+    "websocket",
+    "multiplayer",
+)
+
+_REACT_HINT_KEYWORDS = (
+    "react without next",
+    "react app",
+    "react only",
+)
+
+
+def _task_text(*parts: str) -> str:
+    return re.sub(r"\s+", " ", " ".join(part.strip() for part in parts if part)).strip().lower()
+
+
+def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(pattern in text for pattern in patterns)
+
+
+def _infer_project_type(title: str, desc: str, reqs: str) -> str:
+    text = _task_text(title, desc, reqs)
+    no_backend_hint = any(
+        phrase in text
+        for phrase in ("without backend", "without a backend", "no backend", "no server", "self-contained")
+    )
+
+    if "vite" in text:
+        return "vite"
+    if _contains_any(text, _NEXT_REQUIRED_KEYWORDS):
+        return "nextjs"
+    if _contains_any(text, _STATIC_HINT_KEYWORDS):
+        return "static"
+    if _contains_any(text, _SIMPLE_BROWSER_APP_KEYWORDS) and (no_backend_hint or not _contains_any(text, _COMPLEX_APP_KEYWORDS)):
+        return "static"
+    if _contains_any(text, _REACT_HINT_KEYWORDS):
+        return "react"
+    return "nextjs"
+
+
+def _infer_task_shape(title: str, desc: str, reqs: str) -> str:
+    text = _task_text(title, desc, reqs)
+    if any(pattern in text for pattern in ("tic-tac-toe", "tic tac toe", "game", "board", "player x", "player o")):
+        return "game"
+    if any(pattern in text for pattern in ("calculator", "timer", "counter", "quiz", "countdown")):
+        return "tool"
+    return "experience"
+
+
+def _prefers_deterministic_plan(title: str, desc: str, reqs: str) -> bool:
+    text = _task_text(title, desc, reqs)
+    return (
+        _infer_project_type(title, desc, reqs) == "static"
+        and _contains_any(text, _SIMPLE_BROWSER_APP_KEYWORDS)
+        and not _contains_any(text, _COMPLEX_APP_KEYWORDS)
+    )
+
+
+def _default_scaffold_command(project_type: str) -> str | None:
+    if project_type == "nextjs":
+        return DEFAULT_NEXT_SCAFFOLD_COMMAND
+    return None
+
+
+def _default_test_command(project_type: str) -> str:
+    if project_type == "static":
+        return DEFAULT_STATIC_TEST_COMMAND
+    return "npm run build"
+
+
+def _default_files_for_project_type(project_type: str, step_number: int) -> list[dict]:
+    if project_type == "static":
+        return [
+            {
+                "path": "index.html",
+                "description": "Single-page HTML shell with semantic structure, live status text, and the main interactive surface.",
+            },
+            {
+                "path": "styles.css",
+                "description": "Responsive styling, visual system, and polished interaction states for the browser experience.",
+            },
+            {
+                "path": "script.js",
+                "description": "Client-side state, event handlers, and edge-case handling for the interactive experience.",
+            },
+        ]
+    return [
+        {"path": "app/page.tsx", "description": "Primary page implementing the planned user flow."},
+        {"path": f"components/Step{step_number}Panel.tsx", "description": "Supporting component for this implementation step."},
+    ]
+
+
+def _clean_focus_sentence(text: str) -> str:
     sentence = re.split(r"[.!?\n]", text, maxsplit=1)[0]
+    for pattern in _FOCUS_NOISE_PATTERNS:
+        sentence = re.sub(pattern, " ", sentence, flags=re.IGNORECASE)
     sentence = re.sub(
-        r"^(create|build|implement|design|develop|set up|setup|finish|complete)\s+",
+        r"^(?:create|build|implement|design|develop|set up|setup|finish|complete|make)\s+",
         "",
         sentence,
         flags=re.IGNORECASE,
     )
-    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", sentence)
-    if not words:
-        return "the requested experience"
-    return " ".join(words[:max_words]).lower()
+    sentence = re.sub(r"\b(?:please|kindly)\b", " ", sentence, flags=re.IGNORECASE)
+    sentence = re.sub(r"\s+", " ", sentence).strip(" ,:;-")
+    sentence = re.sub(r"\b(?:a|an|the)\s*$", "", sentence, flags=re.IGNORECASE).strip(" ,:;-")
+    return sentence
+
+
+def _summarize_focus(*parts: str, max_words: int = 8) -> str:
+    for part in parts:
+        cleaned = _clean_focus_sentence(part.strip()) if part else ""
+        if not cleaned:
+            continue
+        words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", cleaned)
+        if words:
+            return " ".join(words[:max_words]).lower()
+    return "the requested experience"
+
+
+def _step_log_label(description: str, max_words: int = 14) -> str:
+    sentence = re.split(r"[.!?\n]", (description or "").strip(), maxsplit=1)[0].strip()
+    words = sentence.split()
+    if len(words) <= max_words:
+        return sentence or "Implementation step"
+    return " ".join(words[:max_words]) + "..."
 
 
 def _is_generic_step_description(description: str) -> bool:
@@ -359,7 +527,7 @@ def _derive_commit_message(
         return "chore: configure compatible project foundation"
     if any(path.endswith(("app/layout.tsx", "app/globals.css")) for path in file_paths):
         return "feat: establish application shell"
-    if any(path.endswith(("app/page.tsx", "pages/index.tsx")) for path in file_paths):
+    if any(path.endswith(("app/page.tsx", "pages/index.tsx", "index.html")) for path in file_paths):
         return f"feat: build {focus}"
     if any("/components/" in f"/{path}" or path.startswith("components/") for path in file_paths):
         return f"feat: add UI for {focus}"
@@ -370,12 +538,67 @@ def _derive_commit_message(
 
 def _build_fallback_plan(title: str, desc: str, reqs: str, past_errors: str = "") -> dict:
     focus = _summarize_focus(title, desc, reqs)
+    project_type = _infer_project_type(title, desc, reqs)
+    task_shape = _infer_task_shape(title, desc, reqs)
     error_hint = ""
     if past_errors:
         error_hint = (
             " Account for the latest failure context while choosing dependency versions, imports, "
             "and build tooling so the next test pass does not repeat the same blocker."
         )
+
+    if project_type == "static":
+        logic_step = (
+            f"Implement the core {focus} logic in plain JavaScript. Handle real state transitions, user input, "
+            "and edge cases instead of placeholder interactions so the page is genuinely usable."
+        )
+        if task_shape == "game":
+            logic_step = (
+                f"Implement the full {focus} gameplay loop in plain JavaScript. Track turn state, win and draw "
+                "conditions, round resets, and visible status updates so the game is playable without any manual setup."
+            )
+        return {
+            "project_type": "static",
+            "scaffold_command": None,
+            "steps": [
+                {
+                    "step_number": 1,
+                    "description": (
+                        f"Create a production-ready single-page shell for {focus}. Build semantic HTML, a responsive layout, "
+                        "and a clear visual system in CSS so the experience feels intentional on desktop and mobile."
+                        f"{error_hint}"
+                    ),
+                    "commit_message": "feat: establish browser app shell",
+                    "files": [
+                        {"path": "index.html", "description": "Main browser entry point with semantic structure and controls."},
+                        {"path": "styles.css", "description": "Responsive design system, layout, and interaction styling."},
+                    ],
+                },
+                {
+                    "step_number": 2,
+                    "description": logic_step,
+                    "commit_message": f"feat: build {focus}",
+                    "files": [
+                        {"path": "script.js", "description": "Client-side state, event handlers, and core interaction logic."},
+                        {"path": "index.html", "description": "Markup hooks and status regions required by the interactive logic."},
+                    ],
+                },
+                {
+                    "step_number": 3,
+                    "description": (
+                        "Polish the browser experience for autonomous delivery. Tighten responsive spacing, keyboard and focus states, "
+                        "status messaging, and dependency-free compatibility so the tester sees a stable result immediately."
+                    ),
+                    "commit_message": "fix: harden browser flow and delivery polish",
+                    "files": [
+                        {"path": "styles.css", "description": "Refined responsive styling, accessibility states, and final polish."},
+                        {"path": "script.js", "description": "Final edge-case handling, resets, and stable runtime behavior."},
+                    ],
+                },
+            ],
+            "test_command": DEFAULT_STATIC_TEST_COMMAND,
+        }
+
     return {
         "project_type": "nextjs",
         "scaffold_command": DEFAULT_NEXT_SCAFFOLD_COMMAND,
@@ -428,6 +651,7 @@ def _build_fallback_plan(title: str, desc: str, reqs: str, past_errors: str = ""
 
 
 def _normalize_plan(plan: dict | None, title: str, desc: str, reqs: str, past_errors: str = "") -> dict:
+    inferred_project_type = _infer_project_type(title, desc, reqs)
     if not isinstance(plan, dict):
         return _build_fallback_plan(title, desc, reqs, past_errors)
 
@@ -435,31 +659,37 @@ def _normalize_plan(plan: dict | None, title: str, desc: str, reqs: str, past_er
     if not isinstance(steps, list) or not steps:
         return _build_fallback_plan(title, desc, reqs, past_errors)
 
-    generic_count = sum(
-        1
-        for step in steps
-        if _is_generic_step_description(str(step.get("description", "")))
-    )
-    if len(steps) < 2 or generic_count == len(steps):
+    detailed_steps = [
+        step for step in steps
+        if not _is_generic_step_description(str(step.get("description", "")))
+    ]
+    if not detailed_steps:
         return _build_fallback_plan(title, desc, reqs, past_errors)
+
+    project_type = str(plan.get("project_type") or inferred_project_type).lower().strip()
+    if project_type not in {"nextjs", "react", "vite", "static"}:
+        project_type = inferred_project_type
 
     normalized_steps: list[dict] = []
     for idx, raw_step in enumerate(steps, start=1):
         step = dict(raw_step or {})
         files = step.get("files")
         if not isinstance(files, list) or not files:
-            files = [
-                {"path": "app/page.tsx", "description": "Primary page implementing the planned user flow."},
-                {"path": f"components/Step{idx}Panel.tsx", "description": "Supporting component for this implementation step."},
-            ]
+            files = _default_files_for_project_type(project_type, idx)
         step_desc = str(step.get("description") or "").strip()
         if _is_generic_step_description(step_desc):
             focus = _summarize_focus(title, desc, reqs)
-            step_desc = (
-                f"Implement a concrete slice of {focus} for step {idx}. Focus on real user-facing behavior, "
-                "wire the listed files together, and avoid placeholder code so the output is testable and ready "
-                "for the next build pass."
-            )
+            if project_type == "static":
+                step_desc = (
+                    f"Implement a concrete browser-ready slice of {focus} for step {idx}. Ship real HTML structure, "
+                    "responsive CSS, and JavaScript behavior so the page is usable without any additional framework setup."
+                )
+            else:
+                step_desc = (
+                    f"Implement a concrete slice of {focus} for step {idx}. Focus on real user-facing behavior, "
+                    "wire the listed files together, and avoid placeholder code so the output is testable and ready "
+                    "for the next build pass."
+                )
 
         step["step_number"] = idx
         step["description"] = step_desc
@@ -467,20 +697,88 @@ def _normalize_plan(plan: dict | None, title: str, desc: str, reqs: str, past_er
         step["commit_message"] = _derive_commit_message(step.get("commit_message"), step_desc, files)
         normalized_steps.append(step)
 
-    project_type = str(plan.get("project_type") or "nextjs").lower().strip()
-    if project_type not in {"nextjs", "react", "vite", "static"}:
-        project_type = "nextjs"
-
     scaffold_command = plan.get("scaffold_command")
-    if project_type == "nextjs":
+    if project_type == "static":
+        scaffold_command = None
+    elif project_type == "nextjs":
         scaffold_command = scaffold_command or DEFAULT_NEXT_SCAFFOLD_COMMAND
+
+    test_command = str(plan.get("test_command") or "").strip()
+    if project_type == "static" and test_command in {"", "npm run build"}:
+        test_command = DEFAULT_STATIC_TEST_COMMAND
+    elif not test_command:
+        test_command = _default_test_command(project_type)
 
     return {
         "project_type": project_type,
         "scaffold_command": scaffold_command,
         "steps": normalized_steps,
-        "test_command": plan.get("test_command") or "npm run build",
+        "test_command": test_command,
     }
+
+
+def _coder_failure_signature(summary: str) -> str:
+    normalized = re.sub(r"\b\d+\b", "#", (summary or "").lower())
+    normalized = re.sub(r"`[^`]+`", "`path`", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized[:220]
+
+
+def _track_coder_failure(state: dict, summary: str) -> tuple[int, int, str]:
+    signature = _coder_failure_signature(summary)
+    repeated = (
+        state.get("coder_repeated_failure_count", 0) + 1
+        if state.get("last_coder_failure_signature") == signature
+        else 1
+    )
+    total = state.get("coder_failure_count", 0) + 1
+    state["last_coder_failure_signature"] = signature
+    state["coder_repeated_failure_count"] = repeated
+    state["coder_failure_count"] = total
+    return repeated, total, signature
+
+
+def _reset_coder_failure_tracking(state: dict) -> None:
+    state["last_coder_failure_signature"] = ""
+    state["coder_repeated_failure_count"] = 0
+    state["coder_failure_count"] = 0
+
+
+def _return_coder_failure(
+    *,
+    state_file: Path,
+    task_dir: Path,
+    state: dict,
+    task_id: int,
+    error_code: str,
+    detail: str,
+) -> dict:
+    repeated, total, signature = _track_coder_failure(state, detail)
+    terminal = repeated >= MAX_CODER_FAILURE_REPEATS or total >= MAX_CODING_ITERATIONS
+    state["status"] = "failed" if terminal else "coding"
+    state["test_errors"] = detail
+    _save_state(state_file, state)
+
+    write_progress(
+        task_dir,
+        task_id,
+        "execution",
+        "Coding halted after repeated failures" if terminal else "Coding blocked - retrying",
+        "The coder hit the same blocker repeatedly and the task is being marked failed for manual intervention."
+        if terminal
+        else "The coder hit a blocker and will retry with preserved failure context.",
+        detail,
+        18.0,
+        metadata={
+            "failure_signature": signature,
+            "repeated_failure_count": repeated,
+            "failure_count": total,
+            "terminal": terminal,
+        },
+    )
+    if terminal:
+        append_build_log(task_dir, f"Coding halted after repeated failures: {detail}")
+    return {"action": "error", "task_id": task_id, "error": error_code, "terminal": terminal}
 
 
 def _compose_blueprint_from_plan(title: str, desc: str, reqs: str, plan: dict) -> str:
@@ -512,7 +810,7 @@ def _compose_blueprint_from_plan(title: str, desc: str, reqs: str, plan: dict) -
 # STEP 1: PLAN — Break the task into implementation steps
 # ═══════════════════════════════════════════════════════════════════════════
 
-def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "", poster_context: str = "", complexity: str = "high") -> list[dict]:
+def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "", poster_context: str = "", complexity: str = "high") -> dict:
     """
     Ask the LLM to break the task into implementation steps.
     Each step has a description and list of files to generate.
@@ -528,6 +826,10 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
     if poster_context:
         poster_section = f"\n\nPoster's Requirements & Answers:\n{poster_context}\n"
 
+    recommended_project_type = _infer_project_type(title, desc, reqs)
+    recommended_scaffold_command = _default_scaffold_command(recommended_project_type)
+    recommended_test_command = _default_test_command(recommended_project_type)
+
     system = (
         "You are a world-class Software Architect AI agent. "
         "Given a task, you break it into implementable steps with DETAILED descriptions. "
@@ -537,17 +839,16 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "- CRITICAL: DO NOT choose package or scaffold versions that exceed the server's Node.js runtime. If Next.js latest would fail on the installed Node version, use a compatible create-next-app release instead.\n"
         "- BE PROACTIVE: If you encounter an error, version conflict, or build failure, RESOLVE IT WHATEVER IT TAKES. You are empowered to change the project structure, switch tools, or adopt a completely different technical approach to bypass the blocker.\n"
         "- You MUST ONLY use JavaScript/TypeScript frontend or fullstack frameworks.\n"
-        "- DEFAULT to 'nextjs' for ALL tasks: websites, web apps, dashboards, "
-        "landing pages, portfolios, e-commerce, SaaS, tools with a UI, APIs, backends — everything.\n"
-        "- Use 'react' ONLY if the task explicitly says 'React without Next.js' or 'Vite + React'.\n"
-        "- Use 'vite' ONLY if the task explicitly specifies Vite as the build tool.\n"
-        "- Use 'static' ONLY for pure HTML/CSS/JS with absolutely no framework needed "
-        "(e.g. the user asks for vanilla JS, plain HTML page, or a simple static site).\n"
+        "- Choose the SMALLEST compatible project type that satisfies the task.\n"
+        "- Use 'nextjs' when the task genuinely needs routing, API routes, server rendering, auth, or a multi-page app shell.\n"
+        "- Use 'react' only if the task explicitly asks for React without Next.js.\n"
+        "- Use 'vite' only if the task explicitly specifies Vite as the build tool.\n"
+        "- Use 'static' for browser-only games, calculators, quizzes, landing pages, and other self-contained single-page experiences.\n"
         "- NEVER use 'python' — Python is FORBIDDEN as a project type.\n"
         "- NEVER use 'node' standalone — if backend is needed, use Next.js API routes.\n"
         "- Backend logic MUST live inside the framework (Next.js API routes, server actions).\n"
         "- NO external database connections — use in-memory state or localStorage only.\n"
-        "- When in doubt: choose 'nextjs'. It is ALWAYS the safe default. The NEXTJS framework MUST be prioritized before you proceed with implementation.\n"
+        "- When the task is a small browser game or toy app, avoid Next.js unless the prompt clearly requires it.\n"
         "- For 'nextjs' always use scaffold_command: "
         f"'{DEFAULT_NEXT_SCAFFOLD_COMMAND}'\n\n"
         "PACKAGE INTEGRITY RULES:\n"
@@ -581,6 +882,9 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         f"Title: {title}\n"
         f"Description: {desc}\n"
         f"Requirements: {reqs}\n"
+        f"Recommended project type for this task: {recommended_project_type}\n"
+        f"Recommended scaffold command: {recommended_scaffold_command or 'null'}\n"
+        f"Recommended test command: {recommended_test_command}\n"
         f"{poster_section}"
         f"{error_context}\n"
         "Return a JSON object with:\n"
@@ -1148,24 +1452,49 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                        "Initializing git repository and workspace", "Creating task workspace...", 2.0)
 
         if not init_repo(task_dir):
-            return {"action": "error", "error": "Failed to initialize git repo."}
+            return _return_coder_failure(
+                state_file=state_file,
+                task_dir=task_dir,
+                state=state,
+                task_id=task_id,
+                error_code="git_repo_init_failed",
+                detail="Git initialization failed before coding could start.",
+            )
 
         repo_url = create_github_repo(task_id, task_dir, title)
         if repo_url:
             log_ok(f"GitHub repo ready: {repo_url}", AGENT_NAME)
             state["repo_url"] = repo_url
         else:
-            return {"action": "error", "error": "GitHub repository creation/push failed"}
+            return _return_coder_failure(
+                state_file=state_file,
+                task_dir=task_dir,
+                state=state,
+                task_id=task_id,
+                error_code="github_repo_creation_failed",
+                detail="GitHub repository creation or initial push failed before implementation could continue.",
+            )
 
         # ── STEP 3: Plan the implementation (ONCE — never re-plan) ───
         if not state.get("plan"):
-            log_think("Planning implementation (Claude Sonnet — one-time plan)...", AGENT_NAME)
+            deterministic_plan = _prefers_deterministic_plan(title, desc, reqs)
+            log_think(
+                "Planning implementation with deterministic static planner..."
+                if deterministic_plan
+                else "Planning implementation (Claude Sonnet — one-time plan)...",
+                AGENT_NAME,
+            )
             write_progress(task_dir, task_id, "planning", "Analyzing requirements",
                            "Breaking task into implementation steps",
-                           "Architecting solution with Claude Sonnet...", 5.0)
+                           "Using a fast deterministic browser-app planner for this task..."
+                           if deterministic_plan
+                           else "Architecting solution with Claude Sonnet...", 5.0)
 
-            # Always use claude-sonnet for the plan — this only runs once
-            plan = plan_implementation(title, desc, reqs, "", poster_context, complexity="high")
+            if deterministic_plan:
+                plan = _build_fallback_plan(title, desc, reqs)
+            else:
+                # Always use claude-sonnet for the plan — this only runs once
+                plan = plan_implementation(title, desc, reqs, "", poster_context, complexity="high")
             if not plan or not plan.get("steps"):
                 log_warn("Planning failed, falling back to deterministic multi-step plan.", AGENT_NAME)
                 plan = _build_fallback_plan(title, desc, reqs)
@@ -1179,7 +1508,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             plan_file.write_text(json.dumps(plan, indent=2), encoding="utf-8")
 
             total = len(plan.get("steps", []))
-            step_names = [s.get("description", f"Step {s.get('step_number', i+1)}") for i, s in enumerate(plan.get("steps", []))]
+            step_names = [_step_log_label(s.get("description", f"Step {s.get('step_number', i+1)}")) for i, s in enumerate(plan.get("steps", []))]
             write_progress(task_dir, task_id, "planning", "Implementation plan ready",
                            f"{total} steps planned: {' → '.join(step_names[:4])}{'...' if total > 4 else ''}",
                            f"Project type: {plan.get('project_type', 'unknown')}, {total} implementation steps",
@@ -1302,8 +1631,14 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["files"] = []
                 state["plan"] = None
                 state["cached_blueprint"] = ""
-                _save_state(state_file, state)
-                return {"action": "error", "error": "fix_only_no_files_reset_state"}
+                return _return_coder_failure(
+                    state_file=state_file,
+                    task_dir=task_dir,
+                    state=state,
+                    task_id=task_id,
+                    error_code="fix_only_no_files_reset_state",
+                    detail="Fix-only recovery produced no code changes, so the coder had to reset its plan state.",
+                )
 
         else:
             # ── Normal mode: execute remaining steps ──
@@ -1314,14 +1649,15 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
 
                 step_desc = step.get("description", f"Step {step_num}")
                 commit_msg = _derive_commit_message(step.get("commit_message"), step_desc, step.get("files"))
+                step_label = _step_log_label(step_desc)
 
-                log_think(f"Step {step_num}/{len(steps)}: {step_desc}", AGENT_NAME)
-                append_build_log(task_dir, f"Step {step_num}: {step_desc}")
+                log_think(f"Step {step_num}/{len(steps)}: {step_label}", AGENT_NAME)
+                append_build_log(task_dir, f"Step {step_num}: {step_label}")
 
                 step_pct = 20.0 + (step_num - 1) / max(len(steps), 1) * 60.0
                 write_progress(task_dir, task_id, "execution",
-                               f"Step {step_num}/{len(steps)}: {step_desc}",
-                               f"Generating code for: {step_desc}",
+                               f"Step {step_num}/{len(steps)}: {step_label}",
+                               step_desc,
                                f"Writing files for step {step_num}...",
                                step_pct, subtask_id=step_num,
                                metadata={"step": step_num, "total_steps": len(steps)})
@@ -1359,7 +1695,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
 
                 step_pct_done = 20.0 + step_num / max(len(steps), 1) * 60.0
                 write_progress(task_dir, task_id, "execution",
-                               f"Step {step_num} complete: {step_desc}",
+                               f"Step {step_num} complete: {step_label}",
                                f"Wrote {len(files_written)} files and committed",
                                f"Committed: {commit_msg}",
                                step_pct_done, subtask_id=step_num,
@@ -1378,17 +1714,17 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         completed_count = len(state.get("completed_steps", []))
         total_steps = len(steps)
         if total_steps > 0 and completed_count < total_steps:
-            state["status"] = "coding"
-            state["test_errors"] = (
-                f"Implementation incomplete: only {completed_count}/{total_steps} steps were committed. "
-                "Continue coding instead of advancing."
+            return _return_coder_failure(
+                state_file=state_file,
+                task_dir=task_dir,
+                state=state,
+                task_id=task_id,
+                error_code=f"incomplete_implementation_{completed_count}_of_{total_steps}",
+                detail=(
+                    f"Implementation incomplete: only {completed_count}/{total_steps} steps were committed. "
+                    "Continue coding instead of advancing."
+                ),
             )
-            _save_state(state_file, state)
-            return {
-                "action": "error",
-                "task_id": task_id,
-                "error": f"incomplete_implementation_{completed_count}_of_{total_steps}",
-            }
 
         # ── STEP 6: Install dependencies ──────────────────────────────
         if (task_dir / "package.json").exists():
@@ -1412,13 +1748,17 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                                metadata={"diagnosis": install_summary, "exit_code": rc})
 
         if not has_meaningful_implementation(task_dir):
-            state["status"] = "coding"
-            state["test_errors"] = (
-                "Implementation quality gate failed: repository only has housekeeping files "
-                "(e.g. .gitignore) and no real code/artifacts."
+            return _return_coder_failure(
+                state_file=state_file,
+                task_dir=task_dir,
+                state=state,
+                task_id=task_id,
+                error_code="no_meaningful_implementation",
+                detail=(
+                    "Implementation quality gate failed: repository only has housekeeping files "
+                    "(e.g. .gitignore) and no real code/artifacts."
+                ),
             )
-            _save_state(state_file, state)
-            return {"action": "error", "error": "No meaningful implementation files found"}
 
         # ── STEP 7: Final push ────────────────────────────────────────
         write_progress(task_dir, task_id, "delivery", "Pushing code",
@@ -1429,22 +1769,30 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             log_warn("Final push to GitHub failed.", AGENT_NAME)
 
         if not verify_remote_has_main(task_dir):
-            state["status"] = "coding"
-            state["test_errors"] = (
-                "GitHub sync gate failed: remote origin/main branch is missing. "
-                "Code must be pushed before delivery."
+            return _return_coder_failure(
+                state_file=state_file,
+                task_dir=task_dir,
+                state=state,
+                task_id=task_id,
+                error_code="github_remote_main_missing",
+                detail=(
+                    "GitHub sync gate failed: remote origin/main branch is missing. "
+                    "Code must be pushed before delivery."
+                ),
             )
-            _save_state(state_file, state)
-            return {"action": "error", "error": "GitHub remote main branch not found"}
 
         if not verify_remote_head_matches_local(task_dir):
-            state["status"] = "coding"
-            state["test_errors"] = (
-                "GitHub sync gate failed: remote origin/main is behind local HEAD. "
-                "Latest implementation was not pushed successfully."
+            return _return_coder_failure(
+                state_file=state_file,
+                task_dir=task_dir,
+                state=state,
+                task_id=task_id,
+                error_code="github_remote_behind_local",
+                detail=(
+                    "GitHub sync gate failed: remote origin/main is behind local HEAD. "
+                    "Latest implementation was not pushed successfully."
+                ),
             )
-            _save_state(state_file, state)
-            return {"action": "error", "error": "GitHub remote main is behind local HEAD"}
 
         log_ok(f"All code pushed to {state.get('repo_url', 'GitHub')}", AGENT_NAME)
 
@@ -1454,6 +1802,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                        95.0, metadata={"repo_url": state.get("repo_url", "")})
 
         # ── Transition to testing (NEVER wipe plan or completed steps) ─
+        _reset_coder_failure_tracking(state)
         state["status"] = "testing"
         state["iterations"] = iteration + 1
         _save_state(state_file, state)
@@ -1479,6 +1828,18 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
     except Exception as e:
         log_err(f"Exception during coding: {e}")
         log_err(traceback.format_exc().strip().splitlines()[-1])
+        if "state" in locals() and "state_file" in locals() and "task_dir" in locals():
+            try:
+                return _return_coder_failure(
+                    state_file=state_file,
+                    task_dir=task_dir,
+                    state=state,
+                    task_id=task_id,
+                    error_code="coder_exception",
+                    detail=f"Unexpected coder exception: {e}",
+                )
+            except Exception:
+                pass
         return {"action": "error", "error": str(e)}
 
 
