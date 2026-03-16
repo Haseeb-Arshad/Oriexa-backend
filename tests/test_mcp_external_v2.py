@@ -50,6 +50,27 @@ def test_external_mcp_registers_v2_tools():
 
 
 @pytest.mark.asyncio
+async def test_external_mcp_registers_micro_verbose_resources():
+    resources = external_mcp._resource_manager._resources
+    resource_uris = set(resources.keys())
+
+    assert "oriexa://external/v2/overview" in resource_uris
+    assert "oriexa://external/v2/tools" in resource_uris
+    assert "oriexa://external/v2/workflow" in resource_uris
+    assert "oriexa://external/v2/events" in resource_uris
+
+    overview = await resources["oriexa://external/v2/overview"].read()
+    tools = await resources["oriexa://external/v2/tools"].read()
+    workflow = await resources["oriexa://external/v2/workflow"].read()
+    events = await resources["oriexa://external/v2/events"].read()
+
+    assert "## Read order" in overview
+    assert "bootstrap_actor" in tools
+    assert "workflow.next_actions" in workflow
+    assert "/api/v2/external/events/stream" in events
+
+
+@pytest.mark.asyncio
 async def test_external_mcp_v2_lifecycle(external_call):
     poster_bootstrap = await external_call(
         "bootstrap_actor",

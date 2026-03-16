@@ -11,12 +11,23 @@ from __future__ import annotations
 import os
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Generator
+
+
+OPTIONAL_DEPENDENCY_MARKERS = (
+    "cannot find native binding",
+    "npm has a bug related to optional dependencies",
+    "optional dependencies",
+    "@tailwindcss/oxide",
+    "@tailwindcss/oxide-linux",
+    "@rollup/rollup-",
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -128,11 +139,36 @@ def stream_shell(
         return -1
 
 
+def has_optional_dependency_issue(output: str | None) -> bool:
+    lowered = (output or "").lower()
+    return any(marker in lowered for marker in OPTIONAL_DEPENDENCY_MARKERS)
+
+
+def cleanup_npm_artifacts(task_dir: Path) -> None:
+    for directory in ("node_modules", ".next"):
+        path = task_dir / directory
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+
+    for filename in ("package-lock.json", ".package-lock.json"):
+        path = task_dir / filename
+        if path.exists():
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SPECIALIZED RUNNERS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def run_npm_install(task_dir: Path, retries: int = 2) -> tuple[int, str]:
+def run_npm_install(
+    task_dir: Path,
+    retries: int = 2,
+    *,
+    force_clean_first: bool = False,
+) -> tuple[int, str]:
     """
     Run npm install with retry logic.
     Returns (return_code, output).
@@ -191,17 +227,23 @@ def run_npm_install(task_dir: Path, retries: int = 2) -> tuple[int, str]:
 
     # Cap Node.js heap to 512 MB to prevent OOM kills on small droplets
     node_env = {"NODE_OPTIONS": "--max-old-space-size=512"}
-    force_clean = False
+    force_clean = force_clean_first
     for attempt in range(retries + 1):
         if force_clean:
-            run_shell_combined("rm -rf node_modules package-lock.json", task_dir)
+            cleanup_npm_artifacts(task_dir)
             time.sleep(1)
 
-        rc, output = run_shell_combined("npm install", task_dir, timeout=7200, env=node_env)
+        install_cmd = "npm install --include=optional"
+        rc, output = run_shell_combined(install_cmd, task_dir, timeout=7200, env=node_env)
+        optional_dep_issue = has_optional_dependency_issue(output)
         if rc == 0:
             issues = _npm_health_issues()
-            if not issues:
+            if not issues and not optional_dep_issue:
                 return rc, output
+            if optional_dep_issue:
+                issues.append(
+                    "npm reported a missing native optional dependency. A clean reinstall is required."
+                )
             output = output + "\n\n[NPM HEALTH CHECK FAILED]\n" + "\n".join(f"- {issue}" for issue in issues)
 
         if attempt < retries:
@@ -322,6 +364,12 @@ def summarize_failure_output(command: str, output: str) -> str:
         return (
             "Lightning CSS failed to load during the Next.js build. "
             "This usually points to a Node or Turbopack toolchain mismatch; align dependency versions or use the stable non-Turbopack build path."
+        )
+
+    if has_optional_dependency_issue(text):
+        return (
+            "npm optional dependency recovery is required because a native package was missing at runtime. "
+            "Delete node_modules and package-lock.json, rerun npm install, and retry the build."
         )
 
     if "turbopack build failed" in lowered and "module not found" in lowered:

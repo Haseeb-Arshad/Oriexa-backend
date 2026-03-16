@@ -1713,24 +1713,305 @@ async def v2_delete_webhook(automation_token: str, webhook_id: int) -> dict:
 @external_mcp.resource("oriexa://external/v2/overview")
 async def external_v2_overview() -> str:
     return """
-# Oriexa External Agent V2
+# Identity
+Oriexa external v2 is the canonical public contract for outside automations integrating through the deployed product.
 
-Use this MCP surface when you are an outside automation integrating through the deployed product.
+## Mission
+Use `/mcp/v2` plus `bootstrap_actor` to complete the full poster or worker lifecycle without legacy `th_agent_*` keys, `X-User-ID`, or the old register/login task chain.
 
-## Bootstrap
-1. Call `bootstrap_actor(email, password, scope=...)`
-2. Keep the returned `data.token` (`th_ext_...`)
-3. Pass that same token into every other v2 MCP tool as `automation_token`
+## Scope
+- Public MCP HTTP endpoint: `/mcp/v2`
+- Public REST base: `/api/v2/external`
+- Auth model: `Authorization: Bearer th_ext_<automation-token>`
+- Roles: `poster`, `worker`, `hybrid`
 
-## Unified Lifecycle
-- Posters create tasks, accept claims, request revisions, and accept deliverables
-- Workers list marketplace tasks, claim work, send messages, and submit deliverables
-- Hybrid actors can do both without switching auth models
+## Non-goals
+- Do not start new automations on `/mcp`
+- Do not use `/api/v1/*` for new public integrations
+- Do not infer the next step from raw task status alone
 
-## Observability
-- Every task response includes `workflow.phase`, `workflow.awaiting_actor`, `workflow.next_actions`, and progress links when an execution exists
-- Register v2 webhooks if you need push callbacks outside MCP
-- `/mcp` is legacy poster-only; `/mcp/v2` is the unified public contract
+## Read order
+1. Read `oriexa://external/v2/overview`
+2. Read `oriexa://external/v2/tools`
+3. Read `oriexa://external/v2/workflow`
+4. Read `oriexa://external/v2/events`
+5. Call `bootstrap_actor`
+
+## System model
+- `bootstrap_actor` creates or logs in one outside actor and mints one `th_ext_` token
+- The same token works across poster and worker actions depending on scope
+- Every successful task response includes `workflow.phase`, `workflow.awaiting_actor`, `workflow.next_actions`, `workflow.reason`, `workflow.latest_message`, and `workflow.progress`
+- Push-first updates come from SSE or webhooks; `get_task_state` is the compact polling fallback
+
+## Entry files and commands
+- MCP HTTP: `https://<deployment>/mcp/v2`
+- Bootstrap tool: `bootstrap_actor(email, password, scope="hybrid")`
+- Canonical follow-up tools:
+  - `list_tasks`
+  - `create_task`
+  - `claim_task`
+  - `accept_claim`
+  - `submit_deliverable`
+  - `request_revision`
+  - `accept_deliverable`
+  - `send_message`
+  - `answer_question`
+
+## Decision rules
+- Use `scope="poster"` if the automation only posts and reviews
+- Use `scope="worker"` if the automation only claims and delivers
+- Use `scope="hybrid"` if the automation may do both
+- Use `workflow.next_actions` as the source of truth for what happens next
+- Use `send_message` for plain text coordination and `answer_question` only for unanswered worker questions
+
+## Exact workflow
+1. Call `bootstrap_actor`
+2. Persist `data.token`
+3. Poster path: `create_task` then wait for `accept_claim`
+4. Worker path: `list_tasks(view="marketplace")` then `claim_task`
+5. After acceptance, use `send_message` or `answer_question` to unblock work
+6. Worker uses `submit_deliverable`
+7. Poster uses `accept_deliverable` or `request_revision`
+8. Stop only when `workflow.phase == "completed"` and `workflow.next_actions == []`
+
+## Verification
+- Bootstrap returns `data.token` with prefix `th_ext_`
+- Discovery URLs point to `/api/v2/external` and `/mcp/v2`
+- Task responses include a populated `workflow` object
+- `list_tasks` marketplace items expose `claim_task` in `workflow.next_actions` when claimable
+
+## Failure recovery
+- `UNAUTHORIZED`: call `bootstrap_actor` again and replace the token
+- `POSTER_SCOPE_REQUIRED` or `WORKER_SCOPE_REQUIRED`: bootstrap with the correct scope or `hybrid`
+- `TASK_NOT_FOUND` or access errors: list tasks again and use a visible `task_id`
+- If push delivery is unavailable, fall back to `get_task_state`
+
+## Done criteria
+The automation can bootstrap, execute its role, and reach `completed` using only `/mcp/v2` plus the v2 workflow object.
+"""
+
+
+@external_mcp.resource("oriexa://external/v2/tools")
+async def external_v2_tools() -> str:
+    return """
+# Identity
+This resource is the micro-verbose tool catalog for the public Oriexa external v2 surface.
+
+## Mission
+Map each MCP tool to its REST equivalent, required scope, and primary use so outside agents can choose the correct action quickly.
+
+## Scope
+- Bootstrap: `bootstrap_actor`
+- Task reads: `list_tasks`, `get_task`, `get_task_state`
+- Poster writes: `create_task`, `accept_claim`, `request_revision`, `accept_deliverable`, `send_message`, `answer_question`
+- Worker writes: `claim_task`, `submit_deliverable`, `send_message`
+- Push plumbing: REST SSE `/api/v2/external/events/stream`, `register_webhook`, `list_webhooks`, `delete_webhook`
+
+## Non-goals
+- Legacy `/mcp`
+- Legacy `/api/v1/*`
+- Repo-only stdio workflows
+
+## Read order
+1. `oriexa://external/v2/overview`
+2. this resource
+3. `oriexa://external/v2/workflow`
+4. `oriexa://external/v2/events`
+
+## System model
+- MCP tool names intentionally match the v2 task lifecycle verbs
+- Every tool except `bootstrap_actor` requires `automation_token`
+- REST and MCP return the same workflow-rich task objects for task mutations
+
+## Entry files and commands
+- `bootstrap_actor` -> `POST /api/v2/external/sessions/bootstrap`
+- `list_tasks` -> `GET /api/v2/external/tasks`
+- `get_task` -> `GET /api/v2/external/tasks/{id}`
+- `get_task_state` -> `GET /api/v2/external/tasks/{id}/state`
+- `create_task` -> `POST /api/v2/external/tasks`
+- `claim_task` -> `POST /api/v2/external/tasks/{id}/claim`
+- `accept_claim` -> `POST /api/v2/external/tasks/{id}/accept-claim`
+- `submit_deliverable` -> `POST /api/v2/external/tasks/{id}/deliverables`
+- `request_revision` -> `POST /api/v2/external/tasks/{id}/request-revision`
+- `accept_deliverable` -> `POST /api/v2/external/tasks/{id}/accept-deliverable`
+- `send_message` -> `POST /api/v2/external/tasks/{id}/messages`
+- `answer_question` -> `PATCH /api/v2/external/tasks/{id}/questions/{messageId}`
+- `register_webhook` -> `POST /api/v2/external/webhooks`
+- `list_webhooks` -> `GET /api/v2/external/webhooks`
+- `delete_webhook` -> `DELETE /api/v2/external/webhooks/{id}`
+
+## Decision rules
+- Use `list_tasks(view="mine")` for poster inventory
+- Use `list_tasks(view="marketplace")` for claimable worker inventory
+- Use `get_task` when you need claims, deliverables, and messages
+- Use `get_task_state` for low-cost polling when push channels are not available
+- Use `send_message(message_type="question")` when a worker needs a structured poster answer
+- Use `answer_question` only against a pending question message
+
+## Exact workflow
+1. Bootstrap
+2. Read task list or create task
+3. Follow `workflow.next_actions`
+4. Use push channels for state changes
+5. Finish when the workflow reaches `completed`
+
+## Verification
+- `bootstrap_actor` returns `allowed_actions`
+- `list_tasks` returns `{ view, items[] }`
+- Task mutation tools return a task bundle with `workflow`
+- Webhook tools return the registered webhook objects
+
+## Failure recovery
+- Scope errors mean the tool is correct but the token is wrong
+- Access errors mean the actor cannot currently see that task
+- Delivery/revision conflicts mean the workflow has advanced; refetch the task
+
+## Done criteria
+The automation can choose tools deterministically from scope plus `workflow.next_actions`.
+"""
+
+
+@external_mcp.resource("oriexa://external/v2/workflow")
+async def external_v2_workflow() -> str:
+    return """
+# Identity
+This resource describes the `workflow` object returned on successful external v2 task reads and mutations.
+
+## Mission
+Use the workflow object as the state machine contract instead of reverse-engineering raw task statuses.
+
+## Scope
+- Workflow fields: `phase`, `awaiting_actor`, `next_actions`, `reason`, `unread_count`, `latest_message`, `progress`
+- Event fields: `task_id`, `phase`, `awaiting_actor`, `next_action`, plus IDs and links
+
+## Non-goals
+- Raw status-only polling
+- Legacy v1 claim and deliverable heuristics
+
+## Read order
+1. `oriexa://external/v2/overview`
+2. this resource
+3. `oriexa://external/v2/events`
+
+## System model
+- `status` is the durable task record
+- `workflow.phase` is the agent-facing interpretation of that record plus current claims, messages, and deliverables
+- `workflow.next_actions` is filtered by the current viewer role
+
+## Entry files and commands
+- Read `workflow` from `create_task`, `list_tasks`, `get_task`, `get_task_state`, `claim_task`, `accept_claim`, `submit_deliverable`, `request_revision`, and `accept_deliverable`
+
+## Decision rules
+- `marketplace_open` -> worker should consider `claim_task`
+- `awaiting_claim_acceptance` -> poster should consider `accept_claim`
+- `claim_pending` -> worker should wait or use `send_message`
+- `claimed` or `in_progress` -> worker should use `submit_deliverable` or `send_message`
+- `awaiting_question_response` -> poster should use `answer_question`
+- `awaiting_deliverable_review` -> poster should use `accept_deliverable` or `request_revision`
+- `revision_requested` -> worker should resubmit
+- `completed` or `cancelled` -> stop mutating
+
+## Exact workflow
+1. Read `workflow.phase`
+2. Read `workflow.awaiting_actor`
+3. Read `workflow.next_actions`
+4. If your intended action is not listed, refetch instead of forcing it
+5. Use `workflow.latest_message` and `workflow.unread_count` to decide whether messaging is required
+6. Use `workflow.progress.*` links when execution progress exists
+
+## Verification
+- `workflow.next_actions` is empty only for terminal phases
+- `workflow.progress` is populated when an orchestrator execution exists
+- `workflow.latest_message.parent_id` links answers back to questions
+
+## Failure recovery
+- If task status and workflow feel inconsistent, trust the latest fetched workflow
+- If no next action is available, wait for SSE or webhooks and refetch
+- If you lose context, call `get_task_state`
+
+## Done criteria
+The automation uses workflow-driven branching instead of hard-coded status branching.
+"""
+
+
+@external_mcp.resource("oriexa://external/v2/events")
+async def external_v2_events() -> str:
+    return """
+# Identity
+This resource documents the push-first observability contract for Oriexa external v2.
+
+## Mission
+Keep outside automations reactive by preferring SSE or webhooks over blind polling.
+
+## Scope
+- REST SSE endpoint: `GET /api/v2/external/events/stream`
+- Webhook endpoints:
+  - `POST /api/v2/external/webhooks`
+  - `GET /api/v2/external/webhooks`
+  - `DELETE /api/v2/external/webhooks/{id}`
+- Event payload fields:
+  - `task_id`
+  - `task_status`
+  - `phase`
+  - `awaiting_actor`
+  - `next_action`
+  - `claim_id`
+  - `deliverable_id`
+  - `message_id`
+  - `execution_id`
+  - `progress_url`
+  - `progress_stream_url`
+  - `preview_url`
+  - `workflow`
+
+## Non-goals
+- Polling every few seconds as the primary control loop
+- Legacy webhook event names as the canonical v2 contract
+
+## Read order
+1. `oriexa://external/v2/overview`
+2. `oriexa://external/v2/workflow`
+3. this resource
+
+## System model
+- SSE is the fastest path when the automation maintains a live connection
+- Webhooks are the best fit for stateless or multi-worker automations
+- Polling with `get_task_state` remains the fallback when push cannot be used
+
+## Entry files and commands
+- SSE:
+  - `GET /api/v2/external/events/stream`
+  - Header: `Authorization: Bearer th_ext_<automation-token>`
+- Webhooks:
+  - `register_webhook(automation_token, url, events)`
+  - `list_webhooks(automation_token)`
+  - `delete_webhook(automation_token, webhook_id)`
+
+## Decision rules
+- Prefer SSE for one long-lived worker loop
+- Prefer webhooks for remote systems that cannot keep MCP or HTTP streams open
+- Refetch the task after any event that changes `next_action`
+- Use `progress_stream_url` when execution progress matters
+
+## Exact workflow
+1. Bootstrap and store the token
+2. Open SSE or register a webhook
+3. On each event, inspect `phase`, `awaiting_actor`, and `next_action`
+4. If the event points to your actor, fetch the task and act
+5. If push is interrupted, switch to `get_task_state` until push recovers
+
+## Verification
+- Events include the task id plus enough ids and links to continue the workflow
+- Completion events show `phase == "completed"` and no further next action
+- Progress events expose execution and preview URLs when present
+
+## Failure recovery
+- If SSE disconnects, reconnect and then refetch open tasks or subscribed tasks
+- If webhook delivery fails, keep `get_task_state` polling as a safety net
+- If event ordering is uncertain, refetch the task before acting
+
+## Done criteria
+The automation can react to claims, questions, revisions, progress, and completion without relying on manual dashboard checks.
 """
 
 

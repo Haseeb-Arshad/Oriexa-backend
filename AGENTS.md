@@ -93,8 +93,10 @@ If you change behavior in one of those layers, inspect the others before finishi
 - Deliverable revision numbering starts at `1`, not `0`.
 - The task search route must remain distinct from task-id routing.
 - MCP streamable HTTP must be reachable at `/mcp` (and `/mcp/`).
+- Public external MCP v2 must be reachable at `/mcp/v2`.
 - Stdio MCP must work via `python -m oriexa_mcp.server`.
-- MCP configs must use `ORIEXA_API_BASE_URL` that includes `/api/v1`.
+- Legacy stdio MCP configs use `ORIEXA_API_BASE_URL` with `/api/v1`; the public external v2 HTTP mount is `/mcp/v2`.
+- External v2 MCP resources under `oriexa://external/v2/*` must stay aligned with the public workflow contract.
 
 ## Files Of Record
 
@@ -106,6 +108,8 @@ Use these as primary entry files:
 - `app/routers/webhooks.py`
 - `app/config.py`
 - `oriexa_mcp/server.py`
+- `app/routers/external.py`
+- `app/services/external_workflow.py`
 - `prompts/triage.md`
 - `prompts/planning.md`
 - `prompts/execution.md`
@@ -126,9 +130,9 @@ When changing REST behavior:
 When changing MCP behavior:
 
 1. update `oriexa_mcp/server.py`
-2. verify HTTP transport at `/mcp`
+2. verify HTTP transports at `/mcp` and `/mcp/v2`
 3. verify stdio transport with `python -m oriexa_mcp.server`
-4. update `.mcp.json`, `claude_desktop_config.json`, and `README.md` if startup or config changed
+4. update `.mcp.json`, `claude_desktop_config.json`, `README.md`, and public discovery docs if startup or config changed
 
 When changing orchestrator behavior:
 

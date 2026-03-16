@@ -35,6 +35,7 @@ from agents.base_agent import (
 )
 from agents.git_ops import commit_step, push_to_remote, append_commit_log
 from agents.shell_executor import (
+    has_optional_dependency_issue,
     run_shell_combined,
     run_npm_install,
     run_pip_install,
@@ -251,6 +252,33 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     env={"NODE_OPTIONS": "--max-old-space-size=512"},
                 )
                 log_command(task_dir, "npm run build", build_rc, build_out)
+
+                if build_rc != 0 and has_optional_dependency_issue(build_out):
+                    append_build_log(
+                        task_dir,
+                        "Detected npm optional dependency issue during build. Performing clean reinstall before retrying build.",
+                    )
+                    write_progress(
+                        task_dir,
+                        task_id,
+                        "testing",
+                        "Repairing broken npm install",
+                        "Build failed because a native optional dependency is missing; retrying after a clean npm reinstall.",
+                        "Cleaning node_modules and package-lock.json, then rerunning npm install...",
+                        86.0,
+                        subtask_id=100,
+                    )
+                    reinstall_rc, reinstall_out = run_npm_install(task_dir, retries=1, force_clean_first=True)
+                    log_command(task_dir, "npm install --include=optional", reinstall_rc, reinstall_out)
+                    if reinstall_rc == 0:
+                        append_build_log(task_dir, "Clean npm reinstall succeeded. Retrying production build...")
+                        build_rc, build_out = run_shell_combined(
+                            "npm run build", task_dir, timeout=7200,
+                            env={"NODE_OPTIONS": "--max-old-space-size=512"},
+                        )
+                        log_command(task_dir, "npm run build (retry after clean reinstall)", build_rc, build_out)
+                    else:
+                        build_out = (build_out + "\n\n[CLEAN REINSTALL FAILED]\n" + reinstall_out).strip()
 
                 if build_rc != 0:
                     build_summary = summarize_failure_output("npm run build", build_out)

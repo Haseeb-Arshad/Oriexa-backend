@@ -244,6 +244,10 @@ def _render_readme(
     structure = _collect_project_structure(task_dir)
     package_json = _load_json_file(task_dir / "package.json")
     scripts = package_json.get("scripts") if isinstance(package_json.get("scripts"), dict) else {}
+    deployment_url = _clean_text(state.get("vercel_url") or "")
+    smoke_test = state.get("smoke_test") if isinstance(state.get("smoke_test"), dict) else {}
+    smoke_details = _truncate_text(smoke_test.get("details") if isinstance(smoke_test, dict) else "", 220)
+    deployment_mode = _clean_text(state.get("deployment_mode") or "")
 
     lines = [
         f"# {project_title}",
@@ -299,8 +303,27 @@ def _render_readme(
         f"- GitHub: {repo_url}",
         f"- Task ID: {task_id}",
         "",
+        "## Deployment",
+    ])
+
+    if deployment_url:
+        lines.append(f"- Vercel URL: {deployment_url}")
+        if smoke_test:
+            lines.append(
+                f"- Smoke test: {'Passed' if smoke_test.get('passed') else 'Warning'}"
+                + (f" ({smoke_details})" if smoke_details else "")
+            )
+        if deployment_mode:
+            lines.append(f"- Deployment mode: {deployment_mode}")
+        if _is_private_or_protected_smoke_failure(smoke_details):
+            lines.append("- Visibility: Deployment exists but is access-protected/private.")
+    else:
+        lines.append("- Deployment details will be written here after the deploy step completes.")
+
+    lines.extend([
+        "",
         "## Notes",
-        "- This README is refreshed automatically by the deploy pipeline before Vercel deployment.",
+        "- This README is refreshed automatically during the deploy pipeline and finalized after delivery metadata is known.",
         "- Keep this document aligned with the shipped implementation and setup commands.",
     ])
 
@@ -332,6 +355,16 @@ def _refresh_readme(
         return False
     readme_path.write_text(content, encoding="utf-8")
     return True
+
+
+def _is_private_or_protected_smoke_failure(details: str | None) -> bool:
+    lowered = (details or "").lower()
+    return (
+        "protected/private" in lowered
+        or "deployment is protected" in lowered
+        or "http 401" in lowered
+        or "http 403" in lowered
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -635,6 +668,8 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
 
         if vercel_url:
             log_ok(f"Vercel Deployment URL: {vercel_url}", AGENT_NAME)
+            state["vercel_url"] = vercel_url
+            state["deployment_mode"] = "production"
             write_progress(task_dir, task_id, "deploying", "Smoke testing deployment",
                            f"Verifying deployment is live at {vercel_url}",
                            "Running smoke test...", 97.0, subtask_id=101,
@@ -658,7 +693,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["smoke_test"] = {"passed": False, "details": details}
                 append_build_log(task_dir, f"Smoke test FAILED: {details}")
 
-                is_protection_error = "protected/private" in details.lower() or "http 401" in details.lower() or "http 403" in details.lower()
+                is_protection_error = _is_private_or_protected_smoke_failure(details)
                 if is_protection_error:
                     log_warn("Production deployment appears protected. Retrying with unlinked public preview deployment...", AGENT_NAME)
                     write_progress(
@@ -682,20 +717,24 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                             deploy_passed = True
                         else:
                             state["vercel_url"] = preview_url
-                            return fail(
-                                "Production deployment is protected and preview fallback is not publicly reachable "
-                                f"({preview_details})."
+                            state["smoke_test"] = {"passed": False, "details": preview_details}
+                            state["deployment_mode"] = "preview_protected_fallback"
+                            append_build_log(
+                                task_dir,
+                                "Preview fallback also appears protected/private; continuing to delivery because a Vercel deployment URL exists.",
                             )
                     else:
-                        return fail(
-                            "Production deployment is protected and public preview fallback deployment failed."
+                        state["deployment_mode"] = "production_private"
+                        append_build_log(
+                            task_dir,
+                            "Public preview fallback failed, but the protected production deployment will still be delivered.",
                         )
 
                     # Continue without retrying protected production deploy.
                     vercel_url = state.get("vercel_url")
 
-                    if not (vercel_url and deploy_passed):
-                        return fail("Public deployment URL unavailable after fallback")
+                    if not vercel_url:
+                        return fail("Deployment completed without a Vercel URL")
                 else:
 
                     # Retry deploy once for non-protection transient failures.
@@ -730,9 +769,19 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             return fail("Vercel deployment failed; deliverable submission blocked")
 
         # ── Commit deploy results ─────────────────────────────────────
+        final_readme_changed = _refresh_readme(
+            task_dir,
+            task_id=task_id,
+            title=task_title,
+            description=task_desc,
+            requirements=task_reqs,
+            repo_url=repo_url,
+            state=state,
+        )
         deploy_summary = {
             "vercel_url": state.get("vercel_url"),
             "smoke_test": state.get("smoke_test"),
+            "deployment_mode": state.get("deployment_mode"),
             "deployed_at": time.time(),
         }
         deploy_file = task_dir / ".deploy_results.json"
@@ -743,9 +792,12 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             append_commit_log(task_dir, h, "chore: deploy to Vercel")
             push_to_remote(task_dir)
             log_ok(f"Deploy results committed [{h}] and pushed", AGENT_NAME)
+            if final_readme_changed:
+                append_build_log(task_dir, f"Final README refreshed with deployment details [{h}]")
 
         # ── Craft deliverable ─────────────────────────────────────────
         vercel_live = state.get("vercel_url")
+        smoke_details = (state.get("smoke_test") or {}).get("details", "")
 
         task_desc = (task_data.get("description") or "")[:600]
         task_reqs = (task_data.get("requirements") or "")[:400]
@@ -795,6 +847,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             "## Delivery Complete",
             "",
             f"**GitHub Repository**: {repo_url}",
+            "**Project README**: `README.md` in the repository has been refreshed with the final project scope, setup, and deployment details.",
         ]
 
         if vercel_live and not vercel_live.startswith("Deployment skipped"):
@@ -807,6 +860,9 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             delivery_lines.append(
                 "**Live Deployment**: Not available (no VERCEL_TOKEN configured)"
             )
+
+        if vercel_live and not deploy_passed and _is_private_or_protected_smoke_failure(smoke_details):
+            delivery_lines.append("**Access Note**: The Vercel deployment exists but is protected/private, so the URL may require access.")
 
         delivery_lines.append("")
 

@@ -13,11 +13,14 @@ Usage (called by orchestrator, not directly):
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import threading
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 
 # Add parent path
@@ -63,14 +66,36 @@ DEFAULT_NEXT_SCAFFOLD_COMMAND = (
     "npx create-next-app@latest ./ --typescript --tailwind --eslint "
     "--app --no-src-dir --import-alias @/* --yes --force --no-git --skip-install"
 )
-NEXT15_SCAFFOLD_COMMAND = (
-    "npx create-next-app@15 ./ --typescript --tailwind --eslint "
-    "--app --no-src-dir --import-alias @/* --yes --force --no-git --skip-install"
-)
 SCAFFOLD_TIMEOUT_SECONDS = int(os.environ.get("SCAFFOLD_TIMEOUT_SECONDS", "7200"))
 MAX_CODING_ITERATIONS = int(os.environ.get("MAX_CODING_ITERATIONS", "12"))
 MAX_CODER_FAILURE_REPEATS = int(os.environ.get("MAX_CODER_FAILURE_REPEATS", "4"))
 DEFAULT_STATIC_TEST_COMMAND = 'echo "Static project verification passed"'
+_FRAMEWORK_PROJECT_TYPES = {"nextjs", "react", "vite"}
+_PROTECTED_FRAMEWORK_CORE_FILES = {
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "tsconfig.json",
+    "jsconfig.json",
+    "next-env.d.ts",
+    "next.config.js",
+    "next.config.mjs",
+    "next.config.ts",
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.ts",
+    "postcss.config.js",
+    "postcss.config.mjs",
+    "postcss.config.cjs",
+    "tailwind.config.js",
+    "tailwind.config.mjs",
+    "tailwind.config.cjs",
+    "tailwind.config.ts",
+    "eslint.config.js",
+    "eslint.config.mjs",
+    ".eslintrc.json",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -120,6 +145,57 @@ def write_progress(
         log_warn(f"Failed to write progress: {e}", AGENT_NAME)
 
 
+def _format_step_file_targets(step: dict, limit: int = 5) -> str:
+    files = step.get("files", [])
+    if not isinstance(files, list) or not files:
+        return "planned files were not specified"
+
+    labels: list[str] = []
+    for file_info in files[:limit]:
+        if not isinstance(file_info, dict):
+            continue
+        path = str(file_info.get("path") or "").strip()
+        description = str(file_info.get("description") or "").strip()
+        if not path:
+            continue
+        labels.append(f"{path} ({description})" if description else path)
+
+    if not labels:
+        return "planned files were not specified"
+
+    if len(files) > limit:
+        labels.append(f"+{len(files) - limit} more")
+
+    return ", ".join(labels)
+
+
+def _format_written_file_summary(files_written: list[str], limit: int = 5) -> str:
+    if not files_written:
+        return "no files written"
+    preview = files_written[:limit]
+    suffix = f", +{len(files_written) - limit} more" if len(files_written) > limit else ""
+    return ", ".join(preview) + suffix
+
+
+@contextmanager
+def _build_log_heartbeat(task_dir: Path, label: str, interval_seconds: int = 15):
+    stop_event = threading.Event()
+    started_at = _time.monotonic()
+
+    def _heartbeat_loop() -> None:
+        while not stop_event.wait(interval_seconds):
+            elapsed = int(_time.monotonic() - started_at)
+            append_build_log(task_dir, f"{label} ({elapsed}s elapsed)")
+
+    worker = threading.Thread(target=_heartbeat_loop, daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        worker.join(timeout=1)
+
+
 def _parse_node_major(raw: str) -> int | None:
     match = re.search(r"v(\d+)", raw or "")
     if not match:
@@ -161,13 +237,22 @@ def _cleanup_scaffold_artifacts(task_dir: Path) -> None:
         "next.config.js",
         "next.config.ts",
         "next.config.mjs",
+        "vite.config.js",
+        "vite.config.ts",
+        "vite.config.mjs",
         "postcss.config.js",
         "postcss.config.mjs",
+        "postcss.config.cjs",
+        "tailwind.config.js",
+        "tailwind.config.ts",
+        "tailwind.config.mjs",
+        "tailwind.config.cjs",
         "eslint.config.js",
         "eslint.config.mjs",
         ".eslintrc.json",
         "jsconfig.json",
         "app",
+        "src",
         "components",
         "lib",
         "public",
@@ -175,6 +260,8 @@ def _cleanup_scaffold_artifacts(task_dir: Path) -> None:
         ".env.local",
         "node_modules",
         "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
         "package.json",
     ]
     for f in conflicting_files:
@@ -194,25 +281,112 @@ def _normalize_scaffold_command(scaffold_cmd: str, task_dir: Path) -> str:
     if "create-next-app" not in scaffold_cmd:
         return scaffold_cmd
 
-    normalized_cmd = scaffold_cmd
+    normalized_cmd = _canonicalize_next_scaffold_command(scaffold_cmd)
+
+    node_major = _detect_node_major(task_dir)
+    if node_major is not None and node_major < 20:
+        log_think(
+            f"Detected Node.js v{node_major}; keeping the official create-next-app@latest command "
+            "instead of pinning an older Next.js version.",
+            AGENT_NAME,
+        )
+
+    return normalized_cmd
+
+
+def _canonicalize_next_scaffold_command(scaffold_cmd: str | None) -> str:
+    normalized_cmd = str(scaffold_cmd or "").strip() or DEFAULT_NEXT_SCAFFOLD_COMMAND
+    if "create-next-app" not in normalized_cmd:
+        return DEFAULT_NEXT_SCAFFOLD_COMMAND
+
+    normalized_cmd = re.sub(r"create-next-app@[^ ]+", "create-next-app@latest", normalized_cmd)
+    if "create-next-app@" not in normalized_cmd:
+        normalized_cmd = normalized_cmd.replace("create-next-app", "create-next-app@latest", 1)
     if "--no-git" not in normalized_cmd:
         normalized_cmd = f"{normalized_cmd} --no-git"
     if "--skip-install" not in normalized_cmd:
         normalized_cmd = f"{normalized_cmd} --skip-install"
-
-    node_major = _detect_node_major(task_dir)
-    if node_major is not None and node_major < 20:
-        normalized = re.sub(r"create-next-app@[^ ]+", "create-next-app@15", normalized_cmd)
-        if normalized == normalized_cmd and "create-next-app@" not in normalized_cmd:
-            normalized = normalized_cmd.replace("create-next-app", "create-next-app@15", 1)
-        if normalized != normalized_cmd:
-            log_think(
-                f"Detected Node.js v{node_major}; using create-next-app@15 for runtime compatibility",
-                AGENT_NAME,
-            )
-        return normalized
-
     return normalized_cmd
+
+
+def _is_framework_project(project_type: str | None) -> bool:
+    return str(project_type or "").lower().strip() in _FRAMEWORK_PROJECT_TYPES
+
+
+def _normalize_rel_path(path: str | None) -> str:
+    return str(path or "").replace("\\", "/").lstrip("./").strip().lower()
+
+
+def _protected_core_files_for_project(project_type: str | None) -> set[str]:
+    return set(_PROTECTED_FRAMEWORK_CORE_FILES) if _is_framework_project(project_type) else set()
+
+
+def _hash_file(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _capture_protected_core_snapshot(task_dir: Path, project_type: str | None) -> dict[str, str | None]:
+    return {
+        rel_path: _hash_file(task_dir / rel_path)
+        for rel_path in sorted(_protected_core_files_for_project(project_type))
+    }
+
+
+def _ensure_protected_core_snapshot(task_dir: Path, state: dict) -> bool:
+    project_type = str(((state or {}).get("plan") or {}).get("project_type") or "").lower()
+    if not _is_framework_project(project_type):
+        state.pop("protected_core_snapshot", None)
+        return False
+
+    snapshot = state.get("protected_core_snapshot")
+    if isinstance(snapshot, dict) and snapshot:
+        return False
+
+    state["protected_core_snapshot"] = _capture_protected_core_snapshot(task_dir, project_type)
+    return True
+
+
+def _sanitize_step_files_for_project(files: list[dict], project_type: str | None, step_number: int) -> list[dict]:
+    protected = _protected_core_files_for_project(project_type)
+    if not protected:
+        return files
+
+    safe_files = []
+    for file_info in files:
+        if not isinstance(file_info, dict):
+            continue
+        if _normalize_rel_path(file_info.get("path")) in protected:
+            continue
+        safe_files.append(file_info)
+
+    if safe_files:
+        return safe_files
+
+    return _default_files_for_project_type(str(project_type or "").lower(), step_number)
+
+
+def _partition_generated_files(
+    files: list[dict],
+    project_type: str | None,
+) -> tuple[list[dict], list[str]]:
+    protected = _protected_core_files_for_project(project_type)
+    if not protected:
+        return files, []
+
+    safe_files: list[dict] = []
+    blocked_paths: list[str] = []
+    for file_info in files:
+        if not isinstance(file_info, dict):
+            continue
+        path = str(file_info.get("path") or "").strip()
+        if _normalize_rel_path(path) in protected:
+            blocked_paths.append(path)
+            continue
+        safe_files.append(file_info)
+
+    return safe_files, blocked_paths
 
 
 def _run_scaffold_command(scaffold_cmd: str, task_dir: Path) -> tuple[str, int, str]:
@@ -222,19 +396,15 @@ def _run_scaffold_command(scaffold_cmd: str, task_dir: Path) -> tuple[str, int, 
     if rc == 0:
         return effective_cmd, rc, out
 
-    if _looks_like_engine_mismatch(out) and "create-next-app@15" not in effective_cmd:
-        fallback_cmd = re.sub(r"create-next-app@[^ ]+", "create-next-app@15", effective_cmd)
-        if fallback_cmd == effective_cmd and "create-next-app@" not in effective_cmd:
-            fallback_cmd = effective_cmd.replace("create-next-app", "create-next-app@15", 1)
-        if fallback_cmd != effective_cmd:
-            log_warn(
-                "Scaffold hit a Node engine mismatch; retrying with create-next-app@15",
-                AGENT_NAME,
-            )
-            append_build_log(task_dir, "Scaffold engine mismatch detected; retrying with create-next-app@15")
-            _cleanup_scaffold_artifacts(task_dir)
-            rc, out = run_shell_combined(fallback_cmd, task_dir, timeout=SCAFFOLD_TIMEOUT_SECONDS)
-            return fallback_cmd, rc, out
+    if _looks_like_engine_mismatch(out):
+        guidance = (
+            "Scaffold engine mismatch detected while using the official create-next-app@latest command. "
+            "The coder will not pin an older Next.js version automatically; choose a smaller compatible "
+            "project type when the task allows it or use a newer Node.js runtime."
+        )
+        log_warn(guidance, AGENT_NAME)
+        append_build_log(task_dir, guidance)
+        out = f"{out.rstrip()}\n\n{guidance}".strip()
 
     return effective_cmd, rc, out
 
@@ -245,6 +415,7 @@ def _workspace_integrity_issues(task_dir: Path, state: dict | None = None) -> li
     lock_path = task_dir / "package-lock.json"
     plan = (state or {}).get("plan") or {}
     project_type = str(plan.get("project_type") or "").lower()
+    snapshot = (state or {}).get("protected_core_snapshot")
 
     if lock_path.exists() and not pkg_path.exists():
         issues.append("package-lock.json exists but package.json is missing")
@@ -289,6 +460,18 @@ def _workspace_integrity_issues(task_dir: Path, state: dict | None = None) -> li
         if not any((task_dir / candidate).exists() for candidate in ("app", "src/app", "pages")):
             issues.append("Next.js workspace is missing app/, src/app/, or pages/")
 
+    if _is_framework_project(project_type) and isinstance(snapshot, dict) and snapshot:
+        for rel_path, previous_hash in snapshot.items():
+            current_hash = _hash_file(task_dir / rel_path)
+            if current_hash == previous_hash:
+                continue
+            if previous_hash is None and current_hash is not None:
+                issues.append(f"protected framework core file '{rel_path}' was created unexpectedly")
+            elif previous_hash is not None and current_hash is None:
+                issues.append(f"protected framework core file '{rel_path}' was removed unexpectedly")
+            else:
+                issues.append(f"protected framework core file '{rel_path}' changed unexpectedly")
+
     return issues
 
 
@@ -299,6 +482,7 @@ def _reset_corrupt_workspace(task_dir: Path, state: dict, issues: list[str]) -> 
         AGENT_NAME,
     )
     append_build_log(task_dir, "Workspace integrity reset: " + "; ".join(issues))
+    append_build_log(task_dir, "Reinstalling framework scaffold from a clean state to avoid dependency loops.")
     _cleanup_scaffold_artifacts(task_dir)
     state["status"] = "coding"
     state["scaffolded"] = False
@@ -306,6 +490,7 @@ def _reset_corrupt_workspace(task_dir: Path, state: dict, issues: list[str]) -> 
     state["completed_steps"] = []
     state["files"] = []
     state["test_errors"] = "Workspace was auto-reset because project structure became invalid."
+    state["protected_core_snapshot"] = {}
     if not state.get("plan"):
         state["total_steps"] = 0
     return state
@@ -607,8 +792,8 @@ def _build_fallback_plan(title: str, desc: str, reqs: str, past_errors: str = ""
                 "step_number": 1,
                 "description": (
                     f"Establish a compatible Next.js foundation for {focus}. Create the root layout, "
-                    "global styling primitives, and any package or config updates required for a clean "
-                    "install and production build. Make the app shell responsive and production-ready so "
+                    "global styling primitives, and a responsive app shell that stays within the scaffolded "
+                    "project structure. Make the initial experience production-ready so "
                     "later feature work lands on stable scaffolding."
                     f"{error_hint}"
                 ),
@@ -636,7 +821,7 @@ def _build_fallback_plan(title: str, desc: str, reqs: str, past_errors: str = ""
                 "step_number": 3,
                 "description": (
                     "Harden the implementation for autonomous delivery. Add any supporting helpers, polish incomplete "
-                    "states, and remove fragile dependencies or imports that would break npm install or npm run build. "
+                    "states, and remove fragile library usage or imports that would break npm install or npm run build. "
                     "Finish with production-focused cleanup so the tester sees clear progress and a stable build."
                 ),
                 "commit_message": "fix: harden production flow and build stability",
@@ -676,6 +861,7 @@ def _normalize_plan(plan: dict | None, title: str, desc: str, reqs: str, past_er
         files = step.get("files")
         if not isinstance(files, list) or not files:
             files = _default_files_for_project_type(project_type, idx)
+        files = _sanitize_step_files_for_project(files, project_type, idx)
         step_desc = str(step.get("description") or "").strip()
         if _is_generic_step_description(step_desc):
             focus = _summarize_focus(title, desc, reqs)
@@ -701,7 +887,7 @@ def _normalize_plan(plan: dict | None, title: str, desc: str, reqs: str, past_er
     if project_type == "static":
         scaffold_command = None
     elif project_type == "nextjs":
-        scaffold_command = scaffold_command or DEFAULT_NEXT_SCAFFOLD_COMMAND
+        scaffold_command = _canonicalize_next_scaffold_command(scaffold_command)
 
     test_command = str(plan.get("test_command") or "").strip()
     if project_type == "static" and test_command in {"", "npm run build"}:
@@ -834,9 +1020,10 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         "You are a world-class Software Architect AI agent. "
         "Given a task, you break it into implementable steps with DETAILED descriptions. "
         "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n\n"
-        "CRITICAL — PROJECT TYPE RULES (STRICTLY ENFORCED):\n"
-        "- Prefer the latest versions of technologies that are COMPATIBLE with the installed runtime on the machine.\n"
-        "- CRITICAL: DO NOT choose package or scaffold versions that exceed the server's Node.js runtime. If Next.js latest would fail on the installed Node version, use a compatible create-next-app release instead.\n"
+        "CRITICAL - PROJECT TYPE RULES (STRICTLY ENFORCED):\n"
+        "- Use official scaffold and install commands so the package manager resolves the current latest compatible releases.\n"
+        "- NEVER hand-write dependency or scaffold version numbers into package.json, lockfiles, or scaffold commands.\n"
+        "- If the latest framework tooling is incompatible with the worker runtime, do NOT pin an older release yourself. Choose a smaller compatible project type when the task allows it, or leave the runtime issue for recovery.\n"
         "- BE PROACTIVE: If you encounter an error, version conflict, or build failure, RESOLVE IT WHATEVER IT TAKES. You are empowered to change the project structure, switch tools, or adopt a completely different technical approach to bypass the blocker.\n"
         "- You MUST ONLY use JavaScript/TypeScript frontend or fullstack frameworks.\n"
         "- Choose the SMALLEST compatible project type that satisfies the task.\n"
@@ -853,8 +1040,8 @@ def plan_implementation(title: str, desc: str, reqs: str, past_errors: str = "",
         f"'{DEFAULT_NEXT_SCAFFOLD_COMMAND}'\n\n"
         "PACKAGE INTEGRITY RULES:\n"
         "- Do NOT remove package.json, next-env.d.ts, app/, src/app/, or pages/ once scaffolded.\n"
-        "- If you change package.json, keep next/react/react-dom present and compatible.\n"
-        "- react and react-dom MUST stay on the same major version.\n"
+        "- Do NOT hand-edit package.json, lockfiles, or framework config during normal implementation steps.\n"
+        "- If a dependency is needed, rely on the scaffold or package-manager install workflow to resolve versions instead of inventing a version string.\n"
         "- Never leave the repo in a partial state with only package-lock.json or only node_modules.\n\n"
         "CRITICAL — STEP DESCRIPTION RULES:\n"
         "- Each step's 'description' MUST be a DETAILED paragraph (3-5 sentences minimum) "
@@ -919,6 +1106,7 @@ def generate_step_code(
     skill_contents: list[str],
     poster_context: str = "",
     task_dir: Path = None,
+    project_type: str = "",
     complexity: str = "high",
 ) -> list[dict]:
     """
@@ -937,6 +1125,7 @@ def generate_step_code(
             + "\n".join(f"  - {f}" for f in existing_files[:30])
             + "\n"
         )
+    protected_core_files = sorted(_protected_core_files_for_project(project_type))
 
     system = (
         "You are a world-class Senior Fullstack Developer producing PRODUCTION-READY, "
@@ -957,10 +1146,15 @@ def generate_step_code(
         "- NEVER use placeholder text like 'TODO' or 'Add your code here'. Write the actual code.\n"
         "- NEVER import components or modules that don't exist in the project.\n"
         "- Preserve scaffold integrity: do not delete package.json, next-env.d.ts, app/, src/app/, or pages/.\n"
-        "- If editing package.json, keep next/react/react-dom installed and keep react/react-dom on the same major version.\n"
+        "- NEVER hand-edit dependency versions or return package.json/lockfile edits during normal feature work.\n"
         "- Never output a repo state that would leave only package-lock.json without package.json.\n"
-        "- All code must be SELF-CONTAINED and FUNCTIONAL — it should work immediately."
+        "- All code must be SELF-CONTAINED and FUNCTIONAL - it should work immediately."
     )
+    if protected_core_files:
+        system += (
+            "\n- For framework projects, DO NOT modify protected scaffold files such as package managers, "
+            "TypeScript config, or framework config during normal feature steps."
+        )
     if skill_contents:
         system += "\n\nYOU MUST STRICTLY FOLLOW THESE CAPABILITY SKILLS:\n\n" + "\n\n---\n\n".join(skill_contents)
 
@@ -983,6 +1177,12 @@ def generate_step_code(
         "- For Next.js/React: components must compile cleanly with proper imports and types.\n"
         "- Write code that a developer would be PROUD to ship. Quality over speed."
     )
+    if protected_core_files:
+        user += (
+            "\n- Protected scaffold files for this framework project: "
+            + ", ".join(protected_core_files)
+            + ". Do not return edits for any of them. Solve the feature using app/, src/app/, pages/, components/, lib/, hooks/, public/, and styles instead."
+        )
 
     # First attempt
     result = llm_json(system, user, max_tokens=16384, complexity=complexity)
@@ -993,8 +1193,23 @@ def generate_step_code(
         debug_file.write_text(result["_raw"], encoding="utf-8")
         log_warn(f"LLM produced invalid JSON. Saved raw output to {debug_file.name}", AGENT_NAME)
 
+    def _validate_files(raw_files: list[dict]) -> tuple[list[dict], list[str]]:
+        valid = [
+            f for f in raw_files
+            if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20
+        ]
+        return _partition_generated_files(valid, project_type)
+
     # Validate: filter out files with empty or trivial content
-    valid_files = [f for f in files if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20]
+    valid_files, blocked_paths = _validate_files(files)
+    if blocked_paths:
+        blocked = ", ".join(blocked_paths[:6])
+        log_warn(
+            f"Step {step.get('step_number')}: rejected edits to protected core files: {blocked}",
+            AGENT_NAME,
+        )
+        if task_dir:
+            append_build_log(task_dir, f"Rejected protected core file edits: {blocked}")
 
     if not valid_files and files:
         # Retry once with more explicit instruction and higher intelligence
@@ -1004,6 +1219,11 @@ def generate_step_code(
             "You MUST write complete, working source code for EVERY file. "
             "Do NOT return empty strings or placeholder comments."
         )
+        if blocked_paths:
+            retry_user += (
+                "\nDo NOT modify protected framework core files such as package.json, lockfiles, or framework config. "
+                "Return only safe feature files."
+            )
         result = llm_json(system, retry_user, max_tokens=16384, complexity="extreme")
         files = result.get("files", []) if isinstance(result, dict) else []
         
@@ -1012,7 +1232,15 @@ def generate_step_code(
             debug_file.write_text(result["_raw"], encoding="utf-8")
             log_warn(f"LLM produced invalid JSON on retry. Saved raw output to {debug_file.name}", AGENT_NAME)
             
-        valid_files = [f for f in files if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20]
+        valid_files, blocked_paths = _validate_files(files)
+        if blocked_paths:
+            blocked = ", ".join(blocked_paths[:6])
+            log_warn(
+                f"Step {step.get('step_number')}: retry still touched protected core files: {blocked}",
+                AGENT_NAME,
+            )
+            if task_dir:
+                append_build_log(task_dir, f"Retry rejected protected core file edits: {blocked}")
 
     if not valid_files and not files and "_raw" in result:
         # If it failed mapping JSON directly twice, try using Sonnet one last time explicitly with error context
@@ -1026,7 +1254,9 @@ def generate_step_code(
         if "_raw" in result and not files and task_dir:
             debug_file = task_dir / f".llm_debug_step_{step.get('step_number')}_final.txt"
             debug_file.write_text(result["_raw"], encoding="utf-8")
-        valid_files = [f for f in files if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20]
+        valid_files, blocked_paths = _validate_files(files)
+        if blocked_paths and task_dir:
+            append_build_log(task_dir, "Final retry still attempted protected framework core file edits.")
 
     return valid_files
 
@@ -1177,6 +1407,7 @@ def _fix_build_errors(
     skill_contents: list[str],
     poster_context: str,
     task_dir: Path,
+    project_type: str = "",
     complexity: str = "high",
 ) -> list[dict]:
     """
@@ -1187,6 +1418,8 @@ def _fix_build_errors(
     import re
 
     lowered_error = error_output.lower()
+    protected_core_files = sorted(_protected_core_files_for_project(project_type))
+    protected_core_set = {_normalize_rel_path(path) for path in protected_core_files}
 
     # Extract file paths mentioned in the error output
     error_files: set[str] = set()
@@ -1232,8 +1465,15 @@ def _fix_build_errors(
     ]
     if any(marker in lowered_error for marker in compatibility_markers):
         for candidate in compatibility_candidates:
+            if _normalize_rel_path(candidate) in protected_core_set:
+                continue
             if (task_dir / candidate).exists():
                 error_files.add(candidate)
+
+    error_files = {
+        fpath for fpath in error_files
+        if _normalize_rel_path(fpath) not in protected_core_set
+    }
 
     if not error_files:
         # Fallback: if we can't parse specific files, fix the main entry points
@@ -1261,17 +1501,23 @@ def _fix_build_errors(
     system = (
         "You are a Senior Developer fixing build errors. "
         "You will receive error output and the current source files. "
-        "Fix ONLY the errors — do NOT rewrite files from scratch. "
+        "Fix ONLY the errors - do NOT rewrite files from scratch. "
         "Keep all existing functionality intact. Only modify what's broken. "
         "If the failure is caused by incompatible dependencies, build tooling, or configuration, "
-        "you MAY modify package.json, build scripts, Next.js config, PostCSS/Tailwind config, "
-        "or replace/remove the failing library and implement the feature with a simpler compatible approach. "
+        "do NOT hand-edit package.json, lockfiles, or framework config to pin versions. "
+        "Instead, remove the incompatible dependency usage from safe application files or replace it with a simpler compatible approach. "
         "Prefer stable, production-safe dependencies and configurations over experimental or Node-incompatible ones. "
         "Never keep the same broken dependency or build flag if it is still causing the failure. "
         "YOU MUST OUTPUT ONLY VALID JSON. NO CONVERSATIONAL TEXT.\n"
         "Return: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n"
         "Each file must have the COMPLETE corrected source code."
     )
+    if protected_core_files:
+        system += (
+            "\nProtected framework core files are off-limits in this mode: "
+            + ", ".join(protected_core_files)
+            + ". Return only safe application-file changes."
+        )
 
     files_section = ""
     for fpath, content in file_contents.items():
@@ -1288,7 +1534,8 @@ def _fix_build_errors(
         "- Do not stop at diagnosis only; return concrete file changes.\n"
         "- If a package or library is incompatible with the runtime or build toolchain, replace it or remove it.\n"
         "- If Turbopack or a cutting-edge build path is failing, prefer the stable compatible build path.\n"
-        "- If a dependency requires a newer Node version than the worker provides, downgrade or swap it.\n"
+        "- Do not hand-write dependency or scaffold versions.\n"
+        "- If a dependency requires a newer Node version than the worker provides, remove that dependency usage or replace it with a simpler native implementation in safe application files.\n"
         "- Simplify the implementation if that is the fastest path to a passing install/build/test.\n\n"
         "Return the corrected files as JSON: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}\n"
         "IMPORTANT: Only return files that need changes. Keep all existing code intact. "
@@ -1301,13 +1548,17 @@ def _fix_build_errors(
         f for f in files
         if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20
     ]
+    valid_files, blocked_paths = _partition_generated_files(valid_files, project_type)
+    if blocked_paths:
+        blocked = ", ".join(blocked_paths[:6])
+        append_build_log(task_dir, f"Fix-only rejected protected core file edits: {blocked}")
 
     if not valid_files:
         log_warn("Fix-only mode returned no valid files. Retrying with compatibility-first fallback.", AGENT_NAME)
         fallback_user = (
             user
             + "\n\nFallback mode: you must return at least one changed file. "
-              "If the current stack is incompatible, edit package.json and the relevant config files to switch to a compatible approach."
+              "Return only safe application-file changes. If the scaffold itself is broken, the workspace will be reinstalled separately."
         )
         result = llm_json(system, fallback_user, max_tokens=16384, complexity="extreme")
         files = result.get("files", []) if isinstance(result, dict) else []
@@ -1315,6 +1566,10 @@ def _fix_build_errors(
             f for f in files
             if isinstance(f, dict) and f.get("path") and f.get("content", "").strip() and len(f.get("content", "").strip()) > 20
         ]
+        valid_files, blocked_paths = _partition_generated_files(valid_files, project_type)
+        if blocked_paths:
+            blocked = ", ".join(blocked_paths[:6])
+            append_build_log(task_dir, f"Fix-only retry rejected protected core file edits: {blocked}")
 
     if not valid_files and "_raw" in result:
         debug_file = task_dir / ".llm_debug_fix.txt"
@@ -1560,6 +1815,10 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 state["scaffolded"] = False
                 _save_state(state_file, state)
 
+        if _ensure_protected_core_snapshot(task_dir, state):
+            append_build_log(task_dir, "Captured protected framework core file snapshot for future integrity checks.")
+            _save_state(state_file, state)
+
         # ── STEP 4: Architectural blueprint (cached — only generate once) ─
         enhanced_blueprint = state.get("cached_blueprint", "")
         if not enhanced_blueprint:
@@ -1591,16 +1850,19 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         if past_errors and len(completed_step_nums) == len(steps) and len(completed_step_nums) > 0:
             failure_summary = summarize_failure_output("build/test verification", past_errors)
             log_think(f"Fix-only mode: all {len(steps)} steps already completed. Fixing build errors...", AGENT_NAME)
+            append_build_log(task_dir, f"Fix-only recovery started: {failure_summary}")
             write_progress(task_dir, task_id, "execution", "Fixing build errors",
                            "Targeted fix — only rewriting files with errors",
                            failure_summary, 75.0,
                            metadata={"diagnosis": failure_summary, "iteration": iteration + 1})
 
-            fix_files = _fix_build_errors(
-                past_errors, title, desc, reqs, enhanced_blueprint,
-                existing_files, skill_contents, poster_context, task_dir,
-                plan_complexity,
-            )
+            with _build_log_heartbeat(task_dir, "Still fixing build errors"):
+                fix_files = _fix_build_errors(
+                    past_errors, title, desc, reqs, enhanced_blueprint,
+                    existing_files, skill_contents, poster_context, task_dir,
+                    project_type,
+                    plan_complexity,
+                )
             if fix_files:
                 files_written = []
                 for f in fix_files:
@@ -1608,6 +1870,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     file_path.write_text(f["content"], encoding="utf-8")
                     files_written.append(f["path"])
+                    append_build_log(task_dir, f"Updated {f['path']} during fix-only recovery")
 
                 log_ok(f"Fixed {len(files_written)} files: {', '.join(files_written[:5])}", AGENT_NAME)
                 fix_commit = _derive_commit_message(
@@ -1618,8 +1881,26 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 h = commit_step(task_dir, fix_commit)
                 if h:
                     append_commit_log(task_dir, h, fix_commit)
+                    append_build_log(task_dir, f"Committed fix-only recovery as {h}: {fix_commit}")
                     push_to_remote(task_dir)
                     log_ok(f"Fix committed [{h}] and pushed", AGENT_NAME)
+                    append_build_log(task_dir, "Pushed fix-only recovery to GitHub")
+
+                post_fix_issues = _workspace_integrity_issues(task_dir, state)
+                if post_fix_issues:
+                    state = _reset_corrupt_workspace(task_dir, state, post_fix_issues)
+                    _save_state(state_file, state)
+                    return _return_coder_failure(
+                        state_file=state_file,
+                        task_dir=task_dir,
+                        state=state,
+                        task_id=task_id,
+                        error_code="protected_core_drift_after_fix",
+                        detail=(
+                            "Protected framework files drifted during recovery, so the agent reset the project "
+                            "and will reinstall the scaffold cleanly on the next coding pass."
+                        ),
+                    )
             else:
                 log_warn(
                     "Fix-only mode produced no files. Resetting state so next run performs a full re-plan and implementation.",
@@ -1650,26 +1931,32 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 step_desc = step.get("description", f"Step {step_num}")
                 commit_msg = _derive_commit_message(step.get("commit_message"), step_desc, step.get("files"))
                 step_label = _step_log_label(step_desc)
+                step_targets = _format_step_file_targets(step)
 
                 log_think(f"Step {step_num}/{len(steps)}: {step_label}", AGENT_NAME)
                 append_build_log(task_dir, f"Step {step_num}: {step_label}")
+                append_build_log(task_dir, f"Step {step_num} plan: {step_targets}")
 
                 step_pct = 20.0 + (step_num - 1) / max(len(steps), 1) * 60.0
                 write_progress(task_dir, task_id, "execution",
                                f"Step {step_num}/{len(steps)}: {step_label}",
                                step_desc,
-                               f"Writing files for step {step_num}...",
+                               f"Drafting {len(step.get('files', [])) or 'the planned'} file(s): {step_targets}",
                                step_pct, subtask_id=step_num,
-                               metadata={"step": step_num, "total_steps": len(steps)})
+                               metadata={"step": step_num, "total_steps": len(steps), "planned_files": step.get("files", [])})
 
-                files = generate_step_code(
-                    step, title, desc, reqs, enhanced_blueprint,
-                    existing_files, skill_contents, poster_context, task_dir=task_dir,
-                    complexity=plan_complexity
-                )
+                append_build_log(task_dir, f"Generating code for step {step_num} with model output...")
+                with _build_log_heartbeat(task_dir, f"Still generating code for step {step_num}"):
+                    files = generate_step_code(
+                        step, title, desc, reqs, enhanced_blueprint,
+                        existing_files, skill_contents, poster_context, task_dir=task_dir,
+                        project_type=plan.get("project_type", ""),
+                        complexity=plan_complexity
+                    )
 
                 if not files:
                     log_warn(f"Step {step_num} generated no files — skipping.", AGENT_NAME)
+                    append_build_log(task_dir, f"Step {step_num} returned no files from the model")
                     continue
 
                 files_written = []
@@ -1679,25 +1966,31 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                     file_path.write_text(f["content"], encoding="utf-8")
                     files_written.append(f["path"])
                     existing_files.append(f["path"])
+                    size_bytes = len(f.get("content", "").encode("utf-8"))
+                    append_build_log(task_dir, f"Wrote {f['path']} ({size_bytes} bytes)")
 
                 log_think(f"  Wrote {len(files_written)} files: {', '.join(files_written[:5])}", AGENT_NAME)
+                append_build_log(task_dir, f"Step {step_num} wrote {len(files_written)} file(s): {_format_written_file_summary(files_written)}")
 
                 h = commit_step(task_dir, commit_msg)
                 if h:
                     append_commit_log(task_dir, h, commit_msg)
                     log_ok(f"  Committed [{h}]: {commit_msg}", AGENT_NAME)
+                    append_build_log(task_dir, f"Committed step {step_num} as {h}: {commit_msg}")
                     if should_push(task_dir):
                         push_to_remote(task_dir)
                         log_ok("  Pushed to GitHub", AGENT_NAME)
+                        append_build_log(task_dir, f"Pushed step {step_num} commit to GitHub")
                 else:
                     log_warn(f"  Commit skipped for step {step_num} (no staged changes).", AGENT_NAME)
+                    append_build_log(task_dir, f"Commit skipped for step {step_num}: no staged changes")
                     continue
 
                 step_pct_done = 20.0 + step_num / max(len(steps), 1) * 60.0
                 write_progress(task_dir, task_id, "execution",
                                f"Step {step_num} complete: {step_label}",
                                f"Wrote {len(files_written)} files and committed",
-                               f"Committed: {commit_msg}",
+                               f"Committed {len(files_written)} file(s): {_format_written_file_summary(files_written)}",
                                step_pct_done, subtask_id=step_num,
                                metadata={"files_written": files_written[:5], "commit": h or ""})
 
@@ -1710,6 +2003,22 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
                 })
                 state["files"].extend(files)
                 _save_state(state_file, state)
+
+                post_step_issues = _workspace_integrity_issues(task_dir, state)
+                if post_step_issues:
+                    state = _reset_corrupt_workspace(task_dir, state, post_step_issues)
+                    _save_state(state_file, state)
+                    return _return_coder_failure(
+                        state_file=state_file,
+                        task_dir=task_dir,
+                        state=state,
+                        task_id=task_id,
+                        error_code=f"protected_core_drift_step_{step_num}",
+                        detail=(
+                            "Protected framework files drifted during implementation, so the agent reset the workspace "
+                            "and will reinstall the scaffold cleanly before continuing."
+                        ),
+                    )
 
         completed_count = len(state.get("completed_steps", []))
         total_steps = len(steps)
@@ -1729,19 +2038,23 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
         # ── STEP 6: Install dependencies ──────────────────────────────
         if (task_dir / "package.json").exists():
             log_think("Installing npm dependencies...", AGENT_NAME)
+            append_build_log(task_dir, "Installing npm dependencies...")
             write_progress(task_dir, task_id, "review", "Installing dependencies",
                            "Running npm install to install project dependencies",
                            "npm install running...", 83.0)
-            rc, out = run_npm_install(task_dir)
+            with _build_log_heartbeat(task_dir, "npm install still running"):
+                rc, out = run_npm_install(task_dir)
             log_command(task_dir, "npm install", rc, out)
             if rc == 0:
                 log_ok("npm install succeeded.", AGENT_NAME)
+                append_build_log(task_dir, "npm install completed successfully")
                 write_progress(task_dir, task_id, "review", "Dependencies installed",
                                "npm install completed successfully",
                                "All packages installed", 86.0)
             else:
                 install_summary = summarize_failure_output("npm install", out)
                 log_warn(f"npm install failed (rc={rc})", AGENT_NAME)
+                append_build_log(task_dir, f"npm install failed: {install_summary}")
                 write_progress(task_dir, task_id, "review", "Dependency install failed",
                                "npm install failed; the tester will block deployment until this is fixed",
                                install_summary, 84.0,
@@ -1761,12 +2074,15 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             )
 
         # ── STEP 7: Final push ────────────────────────────────────────
+        append_build_log(task_dir, f"Preparing final push to {state.get('repo_url', 'GitHub')}")
         write_progress(task_dir, task_id, "delivery", "Pushing code",
                        "Pushing all commits to GitHub repository",
                        f"Pushing to {state.get('repo_url', 'GitHub')}...", 90.0)
-        push_ok = push_to_remote(task_dir)
+        with _build_log_heartbeat(task_dir, "Final push still running"):
+            push_ok = push_to_remote(task_dir)
         if not push_ok:
             log_warn("Final push to GitHub failed.", AGENT_NAME)
+            append_build_log(task_dir, "Final push to GitHub failed")
 
         if not verify_remote_has_main(task_dir):
             return _return_coder_failure(
@@ -1795,6 +2111,7 @@ def process_task(client: OriexaClient, task_id: int) -> dict:
             )
 
         log_ok(f"All code pushed to {state.get('repo_url', 'GitHub')}", AGENT_NAME)
+        append_build_log(task_dir, f"All code pushed to {state.get('repo_url', 'GitHub')}")
 
         write_progress(task_dir, task_id, "delivery", "Code complete",
                        "All implementation steps completed and pushed",
