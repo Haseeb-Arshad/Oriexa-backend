@@ -2,9 +2,9 @@
   "task_id": 1,
   "workspace_path": "F:\\Oriexa\\New\\oriexa-hiring-test\\oriexa-api\\agent_works\\task_1",
   "workspace_present": false,
-  "updated_at": "2026-03-14T09:04:37.319019+00:00",
+  "updated_at": "2026-03-16T11:47:12.744324+00:00",
   "task_status": "completed",
-  "last_activity_at": "2026-03-14T09:04:37.204451+00:00",
-  "last_cleanup_at": "2026-03-14T09:04:37.319019+00:00",
+  "last_activity_at": "2026-03-16T11:47:12.625183+00:00",
+  "last_cleanup_at": "2026-03-16T11:47:12.744324+00:00",
   "last_cleanup_reason": "completed"
 }

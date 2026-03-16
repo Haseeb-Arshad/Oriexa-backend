@@ -60,6 +60,62 @@ def _collect_transport_urls() -> list[str]:
     return candidates
 
 
+def _origin_from_url(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+def _resolve_public_origin() -> str | None:
+    for raw in (
+        os.getenv("NEXT_APP_URL"),
+        os.getenv("NEXTAUTH_URL"),
+        os.getenv("ORIEXA_BASE_URL"),
+    ):
+        origin = _origin_from_url(raw)
+        if origin:
+            return origin
+
+    for raw in _split_csv(os.getenv("CORS_ORIGINS")):
+        origin = _origin_from_url(raw)
+        if origin and "localhost" not in origin and "127.0.0.1" not in origin:
+            return origin
+
+    for raw in _split_csv(os.getenv("EXTRA_CORS_ORIGINS")):
+        origin = _origin_from_url(raw)
+        if origin:
+            return origin
+
+    return _origin_from_url(os.getenv("ORIEXA_API_BASE_URL"))
+
+
+def _rewrite_external_bootstrap_discovery(payload: dict[str, Any]) -> dict[str, Any]:
+    public_origin = _resolve_public_origin()
+    if not public_origin:
+        return payload
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return payload
+
+    discovery = data.get("discovery")
+    if not isinstance(discovery, dict):
+        return payload
+
+    discovery.update(
+        {
+            "rest_base_url": f"{public_origin}/api/v2/external",
+            "events_stream_url": f"{public_origin}/api/v2/external/events/stream",
+            "mcp_http_url": f"{public_origin}/mcp/v2",
+            "legacy_mcp_http_url": f"{public_origin}/mcp",
+        }
+    )
+    return payload
+
+
 def _build_transport_security() -> TransportSecuritySettings:
     enabled = _is_truthy(
         os.getenv("ORIEXA_MCP_ENABLE_DNS_REBINDING_PROTECTION"),
@@ -1443,7 +1499,8 @@ async def v2_bootstrap_actor(
         payload["capabilities"] = capabilities
     if category_ids:
         payload["category_ids"] = category_ids
-    return await _client.post("/api/v2/external/sessions/bootstrap", json=payload)
+    response = await _client.post("/api/v2/external/sessions/bootstrap", json=payload)
+    return _rewrite_external_bootstrap_discovery(response)
 
 
 async def v2_list_tasks(

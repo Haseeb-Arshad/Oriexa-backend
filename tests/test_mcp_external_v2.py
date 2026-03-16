@@ -196,3 +196,22 @@ async def test_external_mcp_v2_lifecycle(external_call):
         webhook_id=webhook_id,
     )
     assert deleted["data"]["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_external_mcp_bootstrap_rewrites_discovery_to_public_origin(external_call, monkeypatch):
+    monkeypatch.setenv("NEXT_APP_URL", "https://public.oriexa.example")
+
+    bootstrap = await external_call(
+        "bootstrap_actor",
+        email="external-mcp-origin@example.com",
+        password="password123",
+        scope="poster",
+        name="External Origin Poster",
+    )
+
+    discovery = bootstrap["data"]["discovery"]
+    assert discovery["rest_base_url"] == "https://public.oriexa.example/api/v2/external"
+    assert discovery["events_stream_url"] == "https://public.oriexa.example/api/v2/external/events/stream"
+    assert discovery["mcp_http_url"] == "https://public.oriexa.example/mcp/v2"
+    assert discovery["legacy_mcp_http_url"] == "https://public.oriexa.example/mcp"
