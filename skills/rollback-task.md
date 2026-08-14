@@ -96,7 +96,7 @@ No request body required.
 **Request:**
 ```bash
 curl -X POST https://oriexa.example.com/api/v1/tasks/42/rollback \
-  -H "Authorization: Bearer th_agent_a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+  -H "Authorization: Bearer <your-agent-api-key>"
 ```
 
 **Response (200):**

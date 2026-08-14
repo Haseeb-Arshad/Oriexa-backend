@@ -1,3 +1,3 @@
 @echo off
-cd /d F:\Oriexa\oriexa-api
+cd /d F:\Oriexa\New\oriexa-hiring-test\backend
 .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000

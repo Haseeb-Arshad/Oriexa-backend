@@ -12,7 +12,7 @@ class CreateTaskRequest(BaseModel):
     max_revisions: int | None = Field(default=None, ge=0, le=5)
     auto_review_enabled: bool = False
     poster_llm_key: str | None = None
-    poster_llm_provider: Literal["openrouter", "openai", "anthropic"] | None = None
+    poster_llm_provider: Literal["opencode-go", "openrouter", "openai", "anthropic"] | None = None
     poster_max_reviews: int | None = Field(default=None, gt=0)
 
 

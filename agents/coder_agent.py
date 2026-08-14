@@ -1332,16 +1332,10 @@ def _load_skills_for_task(title: str, desc: str, reqs: str, plan: dict | None) -
 
     api_skills_candidates = [
         repo_root / "skills",
-        repo_root.parent / "Oriexa" / "skills",
-        repo_root.parent / "oriexa" / "skills",
+        repo_root.parent / "frontend" / "skills",
         *env_skill_dirs,
     ]
-    claude_skills_candidates = [
-        repo_root / ".claude" / "skills",
-        repo_root.parent / "Oriexa" / ".claude" / "skills",
-        repo_root.parent / "oriexa" / ".claude" / "skills",
-        *env_claude_skill_dirs,
-    ]
+    claude_skills_candidates = [*env_claude_skill_dirs]
 
     # 1. Load API skill markdown files (all of them if present)
     seen_api_files: set[Path] = set()

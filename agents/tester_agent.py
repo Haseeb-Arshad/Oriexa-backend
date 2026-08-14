@@ -1,4 +1,4 @@
-﻿"""
+"""
 Oriexa Tester Agent — Run Tests and Commit Results
 
 Tests the generated codebase:

@@ -66,7 +66,7 @@ webhook_event_enum = PgEnum(
     name="webhook_event", create_type=False,
 )
 llm_provider_enum = PgEnum(
-    "openrouter", "openai", "anthropic",
+    "opencode-go", "openrouter", "openai", "anthropic",
     name="llm_provider", create_type=False,
 )
 review_result_enum = PgEnum(

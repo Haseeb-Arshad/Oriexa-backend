@@ -36,12 +36,12 @@ nano .env
 Fill in all values — the critical ones:
 
 ```
-DATABASE_URL=postgresql+asyncpg://postgres:Haseebarshad123@db.qpdszbmoqxkytvrsbtsh.supabase.co:5432/postgres
+DATABASE_URL=postgresql+asyncpg://postgres:<password>@<supabase-host>:5432/postgres
 CORS_ORIGINS=https://oriexa-sigma.vercel.app,http://localhost:3000
 ENVIRONMENT=production
 NEXT_APP_URL=https://oriexa-sigma.vercel.app
 ORIEXA_API_BASE_URL=https://oriexa-sigma.vercel.app/api/v1
-ORIEXA_API_KEY=th_agent_4c4f3cab5cbc247ea17f489b71e3f963318c99590e57540bb883dd0a1bfd4006
+ORIEXA_API_KEY=<set-locally>
 WORKSPACE_ROOT=/opt/oriexa/workspaces
 AGENT_WORKSPACE_DIR=/opt/oriexa/agent_works
 ```

@@ -16,26 +16,29 @@ class Settings(BaseSettings):
     ORCHESTRATOR_AUTO_CLAIM_TASKS: bool = False
 
     # LLM providers
+    OPENCODE_GO_API_KEY: str = ""
+    OPENCODE_GO_BASE_URL: str = "https://opencode.ai/zen/go/v1"
     OPENROUTER_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""  # For direct Anthropic calls (opus)
     MOONSHOT_API_KEY: str = ""  # For Kimi models
 
-    # Model IDs per tier — supports OpenRouter free, Anthropic direct, Moonshot
-    FAST_MODEL: str = "minimax/minimax-m2.5"
-    DEFAULT_MODEL: str = "minimax/minimax-m2.5"
-    STRONG_MODEL: str = "anthropic/claude-sonnet-4.6"
-    THINKING_MODEL: str = "moonshot/kimi-k2.5-thinking"  # Deep reasoning tasks
+    # Model IDs per tier. OpenCode Go is the active default path.
+    # Legacy providers remain available by using explicit provider/model IDs.
+    FAST_MODEL: str = "opencode-go/deepseek-v4-flash"
+    DEFAULT_MODEL: str = "opencode-go/deepseek-v4-pro"
+    STRONG_MODEL: str = "opencode-go/glm-5.1"
+    THINKING_MODEL: str = "opencode-go/kimi-k2.6"
 
-    # Frontend coding agent model tiers
-    # CODING_MODEL        — primary execution model (prioritized for all frontend tasks)
-    # CODING_STRONG_MODEL — escalated to when complexity == "high" or budget > 500
-    # CODING_PLANNING_MODEL — used for the planning stage (strong reasoning required)
-    # Fallback chain for CODING tier: glm-5 → minimax-m2.5 → gemini-3-flash → gpt-5.3-codex
-    CODING_MODEL: str = "openrouter/z-ai/glm-5"
-    CODING_STRONG_MODEL: str = "openrouter/openai/gpt-5.3-codex"
-    CODING_PLANNING_MODEL: str = "openrouter/anthropic/claude-opus-4-6"
-    CODING_ALT_MODEL_1: str = "openrouter/minimax/minimax-m2.5"
-    CODING_ALT_MODEL_2: str = "openrouter/google/gemini-3-flash-preview"
+    # Frontend coding agent model tiers.
+    # CODING_MODEL - primary execution model.
+    # CODING_STRONG_MODEL - escalated to when complexity == "high" or budget > 500.
+    # CODING_PLANNING_MODEL - planning stage model.
+    # Fallback chain for CODING tier: GLM -> DeepSeek Pro -> GLM stable -> DEFAULT.
+    CODING_MODEL: str = "opencode-go/glm-5.1"
+    CODING_STRONG_MODEL: str = "opencode-go/glm-5.1"
+    CODING_PLANNING_MODEL: str = "opencode-go/kimi-k2.6"
+    CODING_ALT_MODEL_1: str = "opencode-go/deepseek-v4-pro"
+    CODING_ALT_MODEL_2: str = "opencode-go/glm-5"
 
     MAX_CONCURRENT_TASKS: int = 5
     TASK_POLL_INTERVAL: int = 30  # seconds

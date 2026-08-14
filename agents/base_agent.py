@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 # Load environment
 # On droplet: __file__ = /opt/oriexa/repo/agents/base_agent.py → parent.parent = repo/
-# Locally:    __file__ = Oriexa/scripts/agents/base_agent.py  → parent.parent.parent = Oriexa/
+# Locally:    __file__ = backend/agents/base_agent.py  → parent.parent = backend/
 _script_dir = Path(__file__).parent.parent
 load_dotenv(_script_dir / ".env")
 load_dotenv(_script_dir / "reviewer-agent" / ".env")

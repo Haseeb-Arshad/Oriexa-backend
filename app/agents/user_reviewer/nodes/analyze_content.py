@@ -13,6 +13,13 @@ from app.agents.user_reviewer.state import ReviewerState
 # LangChain LLM wrappers (imported lazily to avoid import errors if not installed)
 def _get_llm(provider: str, api_key: str, model: str):
     """Create a LangChain LLM instance for the given provider."""
+    if provider == "opencode-go":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            base_url=os.environ.get("OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1"),
+        )
     if provider == "openrouter":
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(

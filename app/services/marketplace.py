@@ -11,7 +11,7 @@ from app.api.events import event_broadcaster
 from app.db.models import Agent, Deliverable, Task, TaskClaim, TaskMessage
 from app.orchestrator.legacy_bridge import ensure_legacy_execution
 from app.services.agent_workspaces import cleanup_workspace, sync_task_status
-from app.services.credits import _add_credits, deduct_credits, process_task_completion
+from app.services.credits import _add_credits, process_task_completion
 from app.services.crypto import encrypt_key
 from app.services.external_events import agent_channel, external_event_broadcaster, user_channel
 from app.services.external_workflow import build_external_event_payload
@@ -414,16 +414,21 @@ async def accept_claim(
     poster_id: int,
     poster_notify_agent_id: int | None = None,
 ) -> dict[str, Any]:
-    task_result = await session.execute(
-        select(Task).where(Task.id == task_id, Task.poster_id == poster_id).limit(1)
-    )
+    task_result = await session.execute(select(Task).where(Task.id == task_id).limit(1))
     task = task_result.scalar_one_or_none()
     if task is None:
         raise MarketplaceError(
             404,
             "TASK_NOT_FOUND",
-            f"Task {task_id} was not found for this poster.",
-            "Use a task you posted.",
+            f"Task {task_id} was not found.",
+            "Use a valid task you posted.",
+        )
+    if task.poster_id != poster_id:
+        raise MarketplaceError(
+            403,
+            "FORBIDDEN",
+            f"Only the poster can accept claims on task {task_id}.",
+            "Use the API key for the user who created this task.",
         )
     if task.status != "open":
         raise MarketplaceError(
@@ -445,20 +450,11 @@ async def accept_claim(
     claim = claim_result.scalar_one_or_none()
     if claim is None:
         raise MarketplaceError(
-            404,
+            409,
             "CLAIM_NOT_FOUND",
             f"Claim {claim_id} was not found or is no longer pending.",
             "List pending claims first and accept one of them.",
         )
-
-    await deduct_credits(
-        session,
-        poster_id,
-        task.budget_credits,
-        "payment",
-        f"Escrow for task: {task.title}",
-        task.id,
-    )
     await session.execute(update(TaskClaim).where(TaskClaim.id == claim.id).values(status="accepted"))
     await session.execute(
         update(TaskClaim)
@@ -634,16 +630,21 @@ async def request_revision(
     notes: str,
     poster_notify_agent_id: int | None = None,
 ) -> dict[str, Any]:
-    task_result = await session.execute(
-        select(Task).where(Task.id == task_id, Task.poster_id == poster_id).limit(1)
-    )
+    task_result = await session.execute(select(Task).where(Task.id == task_id).limit(1))
     task = task_result.scalar_one_or_none()
     if task is None:
         raise MarketplaceError(
             404,
             "TASK_NOT_FOUND",
-            f"Task {task_id} was not found for this poster.",
-            "Use a task you posted.",
+            f"Task {task_id} was not found.",
+            "Use a valid task you posted.",
+        )
+    if task.poster_id != poster_id:
+        raise MarketplaceError(
+            403,
+            "FORBIDDEN",
+            f"Only the poster can request revisions on task {task_id}.",
+            "Use the API key for the user who created this task.",
         )
     if task.status != "delivered":
         raise MarketplaceError(
@@ -661,7 +662,7 @@ async def request_revision(
     deliverable = deliverable_result.scalar_one_or_none()
     if deliverable is None:
         raise MarketplaceError(
-            404,
+            409,
             "DELIVERABLE_NOT_FOUND",
             f"Deliverable {deliverable_id} was not found on task {task_id}.",
             "List deliverables first and select a valid deliverable_id.",
@@ -724,16 +725,21 @@ async def accept_deliverable(
     poster_id: int,
     poster_notify_agent_id: int | None = None,
 ) -> dict[str, Any]:
-    task_result = await session.execute(
-        select(Task).where(Task.id == task_id, Task.poster_id == poster_id).limit(1)
-    )
+    task_result = await session.execute(select(Task).where(Task.id == task_id).limit(1))
     task = task_result.scalar_one_or_none()
     if task is None:
         raise MarketplaceError(
             404,
             "TASK_NOT_FOUND",
-            f"Task {task_id} was not found for this poster.",
-            "Use a task you posted.",
+            f"Task {task_id} was not found.",
+            "Use a valid task you posted.",
+        )
+    if task.poster_id != poster_id:
+        raise MarketplaceError(
+            403,
+            "FORBIDDEN",
+            f"Only the poster can accept deliverables on task {task_id}.",
+            "Use the API key for the user who created this task.",
         )
     if task.status != "delivered":
         raise MarketplaceError(
@@ -751,7 +757,7 @@ async def accept_deliverable(
     deliverable = deliverable_result.scalar_one_or_none()
     if deliverable is None:
         raise MarketplaceError(
-            404,
+            409,
             "DELIVERABLE_NOT_FOUND",
             f"Deliverable {deliverable_id} was not found on task {task_id}.",
             "List deliverables first and select a valid deliverable_id.",

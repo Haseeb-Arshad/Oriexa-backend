@@ -22,6 +22,15 @@ var/
 wheels/
 share/python-wheels/
 *.egg-info/
+
+# Local runtime state and diagnostics
+*.db
+*.sqlite
+*.sqlite3
+*.log
+agent_keys.json
+agent_works/
+workspaces/
 .installed.cfg
 *.egg
 MANIFEST

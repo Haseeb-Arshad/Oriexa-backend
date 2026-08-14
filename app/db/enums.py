@@ -59,6 +59,7 @@ class WebhookEvent(str, enum.Enum):
 
 
 class LlmProvider(str, enum.Enum):
+    OPENCODE_GO = "opencode-go"
     OPENROUTER = "openrouter"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"

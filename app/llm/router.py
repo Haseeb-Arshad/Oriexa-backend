@@ -63,6 +63,10 @@ def _parse_provider(model_config: str) -> tuple[str, str]:
     'openrouter/arcee-ai/trinity-large-preview:free',
     the provider is 'openrouter' and the model_id is everything after.
     """
+    if model_config.startswith("opencode-go/"):
+        return "opencode-go", model_config[len("opencode-go/"):]
+    if model_config.startswith("opencode_go/"):
+        return "opencode-go", model_config[len("opencode_go/"):]
     if model_config.startswith("openrouter/"):
         return "openrouter", model_config[len("openrouter/"):]
     elif model_config.startswith("anthropic/"):
@@ -70,8 +74,7 @@ def _parse_provider(model_config: str) -> tuple[str, str]:
     elif model_config.startswith("moonshot/"):
         return "moonshot", model_config[len("moonshot/"):]
     else:
-        # Default to OpenRouter for backward compatibility
-        return "openrouter", model_config
+        return "opencode-go", model_config
 
 
 def _build_model(
@@ -81,6 +84,15 @@ def _build_model(
     max_tokens: int,
 ) -> ChatOpenAI:
     """Build a ChatOpenAI instance for the given provider."""
+
+    if provider == "opencode-go":
+        return ChatOpenAI(
+            model=model_id,
+            openai_api_key=settings.OPENCODE_GO_API_KEY,
+            openai_api_base=settings.OPENCODE_GO_BASE_URL,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
     if provider == "openrouter":
         return ChatOpenAI(

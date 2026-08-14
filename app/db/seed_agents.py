@@ -14,6 +14,7 @@ Agent roster:
 
 import hashlib
 import logging
+import os
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +32,7 @@ OPERATOR_NAME = "Oriexa System"
 AGENT_DEFINITIONS = [
     {
         "env_var": "ORIEXA_API_KEY",
-        "key": "th_agent_4cbd9fbde50424cedc203c7f48958c8138949cab5d7d3a181cfde35dc08f71d2",
+        "key": "",
         "name": "Oriexa Orchestrator",
         "description": (
             "Core orchestration agent that monitors the task queue, routes work to "
@@ -44,7 +45,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "REVIEWER_AGENT_API_KEY",
-        "key": "th_agent_baf0a258db6095f68ab514cb16dd29927c5dfa606953916346e2c34fb08700a2",
+        "key": "",
         "name": "Reviewer Agent",
         "description": (
             "Specialized agent for code review, quality assurance, and automated testing. "
@@ -56,7 +57,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "CODING_AGENT_API_KEY",
-        "key": "th_agent_e31c9d408361ab222c5668af6c48fc0484300759ffa350942e58df0111069b94",
+        "key": "",
         "name": "Coding Agent",
         "description": (
             "Frontend specialist that builds websites and web apps using vanilla HTML/CSS/JavaScript "
@@ -72,7 +73,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "WRITING_AGENT_API_KEY",
-        "key": "th_agent_23cf36e629f4d547433084db564f9e075ab23937d1f71d08210dbf6ffb5adf76",
+        "key": "",
         "name": "Writing Agent",
         "description": (
             "Professional writing agent for blog posts, technical documentation, copywriting, "
@@ -84,7 +85,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "RESEARCH_AGENT_API_KEY",
-        "key": "th_agent_d927bcc2f0ce4e9e43fe930dbc348c23062a9debeb9bdf19c7d056bed0c972ae",
+        "key": "",
         "name": "Research Agent",
         "description": (
             "Research and analysis agent capable of web research, competitive analysis, "
@@ -96,7 +97,7 @@ AGENT_DEFINITIONS = [
     },
     {
         "env_var": "DATA_AGENT_API_KEY",
-        "key": "th_agent_d43b6c659879a9f161475bfa321fd82e0d23331b272fa2a7432ef5ee5220e8ac",
+        "key": "",
         "name": "Data Processing Agent",
         "description": (
             "Data processing and transformation agent specializing in ETL pipelines, "
@@ -138,7 +139,11 @@ async def seed_agents(session: AsyncSession) -> None:
     # 2. Seed each agent idempotently (skip if api_key_hash already exists)
     seeded = 0
     for defn in AGENT_DEFINITIONS:
-        key_hash = _hash_key(defn["key"])
+        key = os.getenv(defn["env_var"], "").strip()
+        if not key:
+            logger.warning("Skipping %s: %s is not configured", defn["name"], defn["env_var"])
+            continue
+        key_hash = _hash_key(key)
         existing = await session.execute(select(Agent.id).where(Agent.api_key_hash == key_hash))
         if existing.first():
             continue
@@ -151,12 +156,12 @@ async def seed_agents(session: AsyncSession) -> None:
             category_ids=defn["category_ids"],
             hourly_rate_credits=defn["hourly_rate"],
             api_key_hash=key_hash,
-            api_key_prefix=defn["key"][:14],
+            api_key_prefix=key[:14],
             status="active",
         )
         session.add(agent)
         seeded += 1
-        logger.info("Seeded agent: %s (prefix: %s)", defn["name"], defn["key"][:14])
+        logger.info("Seeded agent: %s (prefix: %s)", defn["name"], key[:14])
 
     if seeded:
         await session.commit()

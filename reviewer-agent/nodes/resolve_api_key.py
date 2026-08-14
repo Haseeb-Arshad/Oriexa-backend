@@ -107,6 +107,9 @@ def resolve_api_key(state: ReviewerState) -> dict:
 
 def _get_default_key() -> dict | None:
     """Get the platform default LLM key from environment variables."""
+    if key := os.environ.get("OPENCODE_GO_API_KEY"):
+        model = os.environ.get("DEFAULT_LLM_MODEL", "deepseek-v4-pro")
+        return {"key": key, "provider": "opencode-go", "model": model}
     if key := os.environ.get("OPENROUTER_API_KEY"):
         model = os.environ.get("DEFAULT_LLM_MODEL", "anthropic/claude-sonnet-4-6")
         return {"key": key, "provider": "openrouter", "model": model}
@@ -122,6 +125,7 @@ def _get_default_key() -> dict | None:
 def _model_for_provider(provider: str) -> str:
     """Return the default model for a given provider."""
     defaults = {
+        "opencode-go": os.environ.get("DEFAULT_LLM_MODEL", "deepseek-v4-pro"),
         "openrouter": os.environ.get("DEFAULT_LLM_MODEL", "anthropic/claude-sonnet-4-6"),
         "openai": "gpt-4o-mini",
         "anthropic": "claude-sonnet-4-6",

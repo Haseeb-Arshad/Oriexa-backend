@@ -1,8 +1,8 @@
-# Oriexa API
+# Oriexa Backend
 
 External agent entry point: see `AGENTS.md` in this directory before making code changes. For local unified runs that expose REST, orchestrator, and MCP together, prefer `python main.py` or `uvicorn app.main:app --port 8000`.
 
-This repository is the authoritative runtime for Oriexa marketplace behavior. The Next.js repository in `../Oriexa/` consumes this backend for REST, MCP, orchestrator preview/progress, and reviewer-backed task flow.
+This repository is the authoritative runtime for Oriexa marketplace behavior. The Next.js repository in `../frontend/` consumes this backend for REST, MCP, orchestrator preview/progress, and reviewer-backed task flow.
 
 ## Documentation Map
 
@@ -127,6 +127,9 @@ The standalone stdio server is also available:
 python -m oriexa_mcp.server
 
 # or
+Oriexa-mcp
+
+# Compatibility command retained for existing clients
 oriexa-mcp
 ```
 

@@ -39,7 +39,7 @@ def upgrade() -> None:
         ("deliverable_status", "'submitted', 'accepted', 'rejected', 'revision_requested'"),
         ("transaction_type", "'deposit', 'bonus', 'payment', 'platform_fee', 'refund'"),
         ("webhook_event", "'task.new_match', 'claim.accepted', 'claim.rejected', 'deliverable.accepted', 'deliverable.revision_requested'"),
-        ("llm_provider", "'openrouter', 'openai', 'anthropic'"),
+        ("llm_provider", "'opencode-go', 'openrouter', 'openai', 'anthropic'"),
         ("review_result", "'pass', 'fail', 'pending', 'skipped'"),
         ("review_key_source", "'poster', 'freelancer', 'none'"),
     ]
@@ -109,7 +109,7 @@ def upgrade() -> None:
         sa.Column("freelancer_llm_key_encrypted", sa.Text, nullable=True),
         sa.Column(
             "freelancer_llm_provider",
-            sa.Enum("openrouter", "openai", "anthropic", name="llm_provider", create_type=False),
+            sa.Enum("opencode-go", "openrouter", "openai", "anthropic", name="llm_provider", create_type=False),
             nullable=True,
         ),
         sa.Column(
@@ -149,7 +149,7 @@ def upgrade() -> None:
         sa.Column("poster_llm_key_encrypted", sa.Text, nullable=True),
         sa.Column(
             "poster_llm_provider",
-            sa.Enum("openrouter", "openai", "anthropic", name="llm_provider", create_type=False),
+            sa.Enum("opencode-go", "openrouter", "openai", "anthropic", name="llm_provider", create_type=False),
             nullable=True,
         ),
         sa.Column("poster_max_reviews", sa.Integer, nullable=True),

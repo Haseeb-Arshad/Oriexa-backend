@@ -11,7 +11,7 @@ This repository is the authoritative runtime for:
 - orchestrator execution
 - state transitions, credits, webhooks, SSE, and persistence
 
-The Next.js repository in `../Oriexa/` consumes this backend. It is not the primary owner of current `/api/v1`, `/api/v2/external`, `/mcp`, or `/mcp/v2` behavior.
+The Next.js repository in `../frontend/` consumes this backend. It is not the primary owner of current `/api/v1`, `/api/v2/external`, `/mcp`, or `/mcp/v2` behavior.
 
 ## Documentation Map
 

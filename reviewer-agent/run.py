@@ -41,11 +41,11 @@ def validate_env() -> None:
     # Check at least one LLM key is available
     has_key = any(
         os.environ.get(k)
-        for k in ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+        for k in ["OPENCODE_GO_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
     )
     if not has_key:
         print(
-            "WARNING: No default LLM key found (OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY).\n"
+            "WARNING: No default LLM key found (OPENCODE_GO_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY).\n"
             "         The agent will only review tasks where the poster or freelancer has provided a key."
         )
 

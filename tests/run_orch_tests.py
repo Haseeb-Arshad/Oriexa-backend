@@ -310,15 +310,17 @@ def test_tools():
 def test_llm_router():
     from app.llm.router import ModelTier, _parse_provider
 
+    assert _parse_provider("opencode-go/glm-5.1") == ("opencode-go", "glm-5.1")
+    assert _parse_provider("opencode_go/deepseek-v4-pro") == ("opencode-go", "deepseek-v4-pro")
     assert _parse_provider("openrouter/arcee-ai/model:free") == ("openrouter", "arcee-ai/model:free")
     assert _parse_provider("anthropic/claude-opus-4-5-20250514") == ("anthropic", "claude-opus-4-5-20250514")
     assert _parse_provider("moonshot/kimi-k2") == ("moonshot", "kimi-k2")
-    assert _parse_provider("some-model") == ("openrouter", "some-model")
+    assert _parse_provider("some-model") == ("opencode-go", "some-model")
 
     assert ModelTier.FAST.value == "fast"
     assert ModelTier.STRONG.value == "strong"
     assert ModelTier.THINKING.value == "thinking"
-    print("PASS: LLM router (7 checks)")
+    print("PASS: LLM router (9 checks)")
 
 
 if __name__ == "__main__":

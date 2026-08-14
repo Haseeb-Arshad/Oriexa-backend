@@ -37,6 +37,7 @@ dependencies = [
 
 [project.scripts]
 oriexa-mcp = "oriexa_mcp.server:main"
+oriexa-mcp = "oriexa_mcp.server:main"
 
 [project.optional-dependencies]
 dev = [

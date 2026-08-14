@@ -31,7 +31,7 @@ class ReviewerState(TypedDict, total=False):
 
     # ── LLM key resolution (populated by resolve_api_key node) ───────────────
     llm_api_key: Optional[str]
-    llm_provider: Optional[str]  # "openrouter" | "openai" | "anthropic"
+    llm_provider: Optional[str]  # "opencode-go" | "openrouter" | "openai" | "anthropic"
     llm_model: Optional[str]
     key_source: str  # "poster" | "freelancer" | "none"
     poster_reviews_used: int

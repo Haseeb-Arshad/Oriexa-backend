@@ -3,13 +3,17 @@
 import asyncio
 import hashlib
 import json
+import re
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.api.errors import invalid_parameter_error
 from app.auth.api_key import hash_api_key, is_valid_api_key_format
 from app.auth.external_actor import decode_external_token
 from app.auth.dependencies import AuthResponse
@@ -35,6 +39,8 @@ from app.orchestrator.task_picker import TaskPickerDaemon
 from app.orchestrator.reviewer_daemon import ReviewerDaemon
 
 orch_logger = logging.getLogger("app.orchestrator")
+TASK_ROUTE_RE = re.compile(r"^/api/v1/tasks/(?P<task_id>[^/]+)(?:/.*)?$")
+TASK_ROUTE_RESERVED_SEGMENTS = {"bulk", "search"}
 
 
 def _validate_deployment_config() -> None:
@@ -281,6 +287,34 @@ app.add_middleware(
 @app.exception_handler(AuthResponse)
 async def auth_response_handler(request: Request, exc: AuthResponse):
     return exc.response
+
+
+def _invalid_task_id_response(path: str) -> JSONResponse | None:
+    match = TASK_ROUTE_RE.match(path)
+    if not match:
+        return None
+
+    task_id = match.group("task_id")
+    if task_id in TASK_ROUTE_RESERVED_SEGMENTS:
+        return None
+
+    if not task_id.isdigit() or int(task_id) < 1:
+        return invalid_parameter_error(
+            f"Invalid task ID: {task_id}",
+            "Task IDs are positive integers. Use GET /api/v1/tasks to browse available tasks.",
+        )
+
+    return None
+
+
+@app.exception_handler(StarletteHTTPException)
+async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404:
+        invalid_task_id = _invalid_task_id_response(request.url.path)
+        if invalid_task_id is not None:
+            return invalid_task_id
+
+    return await http_exception_handler(request, exc)
 
 
 # Health check

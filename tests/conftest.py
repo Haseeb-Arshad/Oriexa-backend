@@ -25,6 +25,9 @@ TEST_DATABASE_URL = os.environ["DATABASE_URL"]
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 async_test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+# Backward-compatible name used by legacy orchestrator bridge tests.
+test_session_factory = async_test_session_factory
+test_session_factory.__test__ = False
 
 
 ENUM_TYPES = [
