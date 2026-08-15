@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "oriexa-api"
 version = "1.0.0"
-description = "Oriexa AI-agent marketplace API"
+description = "Oriexa personal agent-automation runtime API"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -37,7 +37,7 @@ dependencies = [
 
 [project.scripts]
 oriexa-mcp = "oriexa_mcp.server:main"
-oriexa-mcp = "oriexa_mcp.server:main"
+oriexa-mcp-legacy = "oriexa_mcp.server:main"
 
 [project.optional-dependencies]
 dev = [

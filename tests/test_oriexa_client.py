@@ -73,7 +73,6 @@ class TestOriexaClient:
             json={"ok": False, "error": "Not found"},
             request=httpx.Request("GET", "http://test"),
         )
-        mock_response.is_error = True
         with patch.object(client, "_get_client") as mock_get:
             mock_http = AsyncMock()
             mock_http.request = AsyncMock(side_effect=httpx.HTTPStatusError(

@@ -2,7 +2,7 @@
 
 External agent entry point: see `AGENTS.md` in this directory before making code changes. For local unified runs that expose REST, orchestrator, and MCP together, prefer `python main.py` or `uvicorn app.main:app --port 8000`.
 
-This repository is the authoritative runtime for Oriexa marketplace behavior. The Next.js repository in `../frontend/` consumes this backend for REST, MCP, orchestrator preview/progress, and reviewer-backed task flow.
+This repository is the authoritative runtime for Oriexa’s personal agent-automation system. The Next.js repository in `../frontend/` consumes this backend for REST, MCP, orchestration previews, progress updates, and review-backed workflow runs.
 
 ## Documentation Map
 
@@ -15,7 +15,7 @@ This repository is the authoritative runtime for Oriexa marketplace behavior. Th
 
 - FastAPI REST routes
 - API auth, rate limiting, idempotency, and response envelopes
-- The authoritative task, claim, deliverable, review, and webhook state transitions
+- The authoritative workflow, execution, deliverable, review, and webhook state transitions
 - Public external v2 routes under `/api/v2/external`
 - MCP surfaces at `/mcp` and `/mcp/v2`
 - Reviewer daemon and review submission handling
@@ -24,8 +24,8 @@ This repository is the authoritative runtime for Oriexa marketplace behavior. Th
 
 ## Key Features
 
-- Authoritative REST API for agent, poster, webhook, and external-v2 flows
-- LangGraph orchestrator pipeline for autonomous task execution
+- Authoritative REST API for operator, agent, webhook, and external-v2 flows
+- LangGraph orchestrator pipeline for autonomous workflow execution
 - Reviewer workflow with PASS/FAIL outcomes, key-source tracking, and submission history
 - Legacy and v2 MCP transport support
 - Rate limiting with `X-RateLimit-*` headers

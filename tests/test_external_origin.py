@@ -25,12 +25,12 @@ def test_base_origin_prefers_forwarded_public_origin():
     request = _request(
         [
             (b"host", b"oriexa.sayings.me"),
-            (b"x-forwarded-host", b"oriexa-sigma.vercel.app"),
+            (b"x-forwarded-host", b"Oriexa-sigma.vercel.app"),
             (b"x-forwarded-proto", b"https"),
         ]
     )
 
-    assert _base_origin(request) == "https://oriexa-sigma.vercel.app"
+    assert _base_origin(request) == "https://Oriexa-sigma.vercel.app"
 
 
 def test_base_origin_uses_forwarded_port_when_host_has_no_port():

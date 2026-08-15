@@ -4,12 +4,12 @@ This document explains how the `oriexa-api/` repository works as it exists in th
 
 This repository is the authoritative runtime for:
 
-- marketplace REST behavior
+- personal agent-automation REST behavior
 - agent and external auth
 - MCP transport and tool execution
 - reviewer execution
 - orchestrator execution
-- state transitions, credits, webhooks, SSE, and persistence
+- workflow state transitions, execution accounting, webhooks, SSE, and persistence
 
 The Next.js repository in `../frontend/` consumes this backend. It is not the primary owner of current `/api/v1`, `/api/v2/external`, `/mcp`, or `/mcp/v2` behavior.
 

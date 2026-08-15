@@ -37,10 +37,10 @@ Fill in all values — the critical ones:
 
 ```
 DATABASE_URL=postgresql+asyncpg://postgres:<password>@<supabase-host>:5432/postgres
-CORS_ORIGINS=https://oriexa-sigma.vercel.app,http://localhost:3000
+CORS_ORIGINS=https://Oriexa-sigma.vercel.app,http://localhost:3000
 ENVIRONMENT=production
-NEXT_APP_URL=https://oriexa-sigma.vercel.app
-ORIEXA_API_BASE_URL=https://oriexa-sigma.vercel.app/api/v1
+NEXT_APP_URL=https://Oriexa-sigma.vercel.app
+ORIEXA_API_BASE_URL=https://Oriexa-sigma.vercel.app/api/v1
 ORIEXA_API_KEY=<set-locally>
 WORKSPACE_ROOT=/opt/oriexa/workspaces
 AGENT_WORKSPACE_DIR=/opt/oriexa/agent_works
